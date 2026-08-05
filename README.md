@@ -1,118 +1,70 @@
 # Mono
 
-Personal Strava-style fitness tracker for Android. **Kotlin · Jetpack Compose · Room · Fused Location · Google Maps**.
+A personal fitness tracker for Android.  
+Log activities, record live GPS sessions, plan routes, and review training stats — all on-device.
 
-Everything is on-device. No backend, no login — the app opens on the activity feed.
+**Kotlin · Jetpack Compose · Room · Fused Location · Google Maps**
+
+---
+
+## What it does
+
+- Activity feed with manual entry, edit, and delete
+- Live GPS tracking with foreground service
+- Post-activity map view and elevation profile
+- GPX import and export
+- Shareable PNG route cards
+- Route planning with type and distance filters
+- Weekly / monthly stats and personal records
+- Optional BLE heart-rate strap support during recording
+
+No account, no backend, no cloud sync. The app opens straight to the feed.
+
+---
 
 ## Design
 
-- Strict black & white
-- Frosted / bubble cards, pill buttons, soft shadows
-- Bottom nav: **Home · Record · Routes · Stats**
-
-## Features (v1)
-
-| Area | Status |
-|------|--------|
-| Activity feed + manual CRUD | Done |
-| Live GPS recording (foreground service) | Done |
-| Post-activity map + elevation profile | Done |
-| GPX import + export | Done |
-| Shareable PNG route card | Done |
-| Route planning (tap map) + elevation API + filters | Done |
-| Home feed type filter + route min/max distance | Done |
-| BLE heart-rate strap (scan + live HR HUD) | Done |
-| Route + activity GPX export | Done |
-| Settings → clear database | Done |
-| Unit + Room + Compose UI tests | Done |
-| Weekly/monthly stats + auto PRs | Done |
-| Turn-by-turn nav | Stub — Premium |
-| Training load score | Stub — Premium |
-| Mock seed data | On by default (`BuildConfig.SEED_DATA`) |
+- Strict black and white
+- Translucent, frosted-glass panels
+- Rounded cards, pill buttons, soft shadows
+- Bottom navigation: Home · Record · Routes · Stats
 
 ---
 
 ## Requirements
 
-- **Android Studio** Ladybug / Koala+ (AGP 8.7, JDK 17)
-- **minSdk 26**, targetSdk 35
+- Android Studio Koala+
+- JDK 17
 - Android SDK at the path in `local.properties`
-- Google account for a **Maps SDK for Android** API key (maps won’t render without it; rest of the app works)
+- Google account for a **Maps SDK for Android** API key
+- `minSdk 26`, `targetSdk 35`
 
 ---
 
-## Google Maps API key
+## Get started
 
-1. Open [Google Cloud Console](https://console.cloud.google.com/)
-2. Create/select a project → **APIs & Services → Library**
-3. Enable **Maps SDK for Android**
-4. **Credentials → Create credentials → API key**
-5. Restrict the key to *Maps SDK for Android* and your package:
-   - Debug: `com.mono.fitness.debug`
-   - Release: `com.mono.fitness`
-6. Copy `local.properties.example` → `local.properties` (Android Studio may already create `sdk.dir`)
-7. Set:
+1. Open `C:\Users\MSI\OneDrive\Desktop\Interest\Mono` in Android Studio.
+2. Copy `local.properties.example` to `local.properties` and fill in your paths.
+3. Set your Google Maps API key in `local.properties`:
 
 ```properties
-sdk.dir=C\:\\Users\\YOUR_USER\\AppData\\Local\\Android\\Sdk
+sdk.dir=C:\\Users\\YOUR_USER\\AppData\\Local\\Android\\Sdk
 MAPS_API_KEY=AIza...your_real_key...
 ```
 
-The key is injected into the manifest via `manifestPlaceholders`.
-
-**Never commit a real key.** `local.properties` is gitignored.
+4. Run **app** on an emulator or device with API 26+.
 
 ---
 
-## Open & run
+## Google Maps setup
 
-1. **File → Open** → `C:\Users\MSI\OneDrive\Desktop\Interest\Mono`
-2. Wait for Gradle sync (first run downloads the wrapper + deps)
-3. If JDK is missing: **Settings → Build → Gradle → Gradle JDK → 17**
-4. Pick an emulator (API 26+) or USB device with **Developer options**
-5. Run **app**
-
-### Phase test checklist
-
-**Phase 1 — Scaffold**  
-App launches, black/white theme, bottom nav switches Home / Record / Routes / Stats.
-
-**Phase 2 — Manual entry**  
-Home → **Add manual** → fill type/distance/duration → Save → appears in feed → open detail → Edit / Delete.  
-Home → **Import GPX** → pick a `.gpx` file → activity opens with map + stats.
-
-**Phase 3 — GPS**  
-Record tab → grant location (+ notifications on Android 13+) → allow battery unrestricted when prompted → Start → notification “Recording” → lock screen → unlock → track still growing → Finish → detail with map.
-
-**Phase 4 — Route / elevation / GPX**  
-Open a seeded activity → map + elevation chart → toolbar export GPX → share sheet.
-
-**Phase 5 — Share card**  
-Detail → share icon or **Share PNG card** → gallery `Pictures/Mono` + share sheet (silhouette path, no tiles).
-
-**Phase 6 — Routes**  
-Routes → **Plan** → tap map ≥2 points → name → Save → filter by type/distance. Turn-by-turn shows Premium stub.
-
-**Phase 7 — Stats**  
-Stats → week/month totals, 7-day bar chart, personal records from seed data. Training load = Premium stub.
-
----
-
-## Seed data
-
-On first launch with empty DB, Mono inserts:
-
-- GPS run, ride, hike (with track points)
-- Manual gym session
-- One planned route
-
-Toggle in `app/build.gradle.kts`:
-
-```kotlin
-buildConfigField("boolean", "SEED_DATA", "true") // or "false"
-```
-
-Clear app data to re-seed, or use **Home → Settings (gear) → Clear database**.
+1. Open [Google Cloud Console](https://console.cloud.google.com/)
+2. Create or select a project
+3. Enable **Maps SDK for Android**
+4. Create an API key and restrict it to Maps SDK for Android
+5. Match your package name:
+   - Debug: `com.mono.fitness.debug`
+   - Release: `com.mono.fitness`
 
 ---
 
@@ -120,42 +72,68 @@ Clear app data to re-seed, or use **Home → Settings (gear) → Clear database*
 
 ```
 app/src/main/java/com/mono/fitness/
-  data/          Room entities, DAOs, repository, seed
-  tracking/      Foreground GPS service
+  data/           Room entities, DAOs, repository, seed data
+  tracking/       Foreground GPS recording service
   ui/
-    theme/       B/W + frosted panels
-    components/  Cards, map, charts
-    screens/     Home, Record, Routes, Stats, CRUD
-    navigation/  Bottom nav + graph
-  util/          Formatters, GPX, share PNG
+    theme/        Black/white theme, frosted panels
+    components/   Cards, maps, charts
+    screens/      Home, Record, Routes, Stats, CRUD
+    navigation/   Bottom nav + navigation graph
+  util/           Formatters, GPX parser, share PNG
 ```
 
 ---
 
 ## Permissions
 
-| Permission | Why |
-|------------|-----|
-| `ACCESS_FINE_LOCATION` | Live track |
-| `ACCESS_BACKGROUND_LOCATION` | Continue when app backgrounded (user grants in settings) |
-| `FOREGROUND_SERVICE` / `_LOCATION` | Recording notification service |
-| `POST_NOTIFICATIONS` | Android 13+ recording notification |
-| `BLUETOOTH*` | Optional HR strap during live recording |
-| `WRITE_EXTERNAL_STORAGE` (≤28) | Legacy PNG save; 10+ uses MediaStore |
+| Permission | Purpose |
+|---|---|
+| `ACCESS_FINE_LOCATION` | Live GPS tracking |
+| `ACCESS_BACKGROUND_LOCATION` | Background tracking continuation |
+| `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_LOCATION` | Recording notification |
+| `POST_NOTIFICATIONS` | Android 13+ notification permission |
+| `BLUETOOTH*` | Optional heart-rate strap |
+| `WRITE_EXTERNAL_STORAGE` | Save PNG cards on Android 28 and below |
 
 ---
 
 ## Troubleshooting
 
-| Issue | Fix |
-|-------|-----|
-| Blank map | Set valid `MAPS_API_KEY`; enable Maps SDK; match package name + SHA-1 |
-| Tracking dies screen-off | Disable battery optimization for Mono; use real device |
-| Gradle / Java errors | Install JDK 17; set Gradle JDK in Android Studio |
-| No seed data | Uninstall app or clear storage; ensure `SEED_DATA=true` |
+**Blank map**  
+Set a valid `MAPS_API_KEY`, enable Maps SDK in Google Cloud Console, and confirm the package name and SHA-1 match.
+
+**Tracking stops when screen is off**  
+Disable battery optimization for Mono and use a physical device when possible.
+
+**Gradle or Java errors**  
+Install JDK 17 and set it in Android Studio under **Settings → Build → Gradle → Gradle JDK**.
+
+**No seed data**  
+Uninstall the app or clear storage, then make sure `SEED_DATA=true` in `build.gradle.kts`.
+
+---
+
+## Seed data
+
+On first launch with an empty database, Mono inserts sample activities and one planned route.
+
+Toggle with:
+
+```kotlin
+buildConfigField("boolean", "SEED_DATA", "true")
+```
+
+Clear app data to re-seed, or use **Settings → Clear database** in the app.
+
+---
+
+## Roadmap
+
+- Turn-by-turn navigation — Premium stub
+- Training load score — Premium stub
 
 ---
 
 ## License
 
-Personal / educational use.
+Personal and educational use.
