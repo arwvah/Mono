@@ -1,0 +1,24 @@
+Prompt:
+Build a native Android fitness tracking app called [APP NAME] — a personal Strava clone. Use Kotlin with Jetpack Compose, Room for local storage, and the Fused Location Provider API with a foreground service for GPS tracking (so recording continues when the screen is off). No backend, no authentication — everything is stored on-device, and the app opens straight to the main activity feed/dashboard.
+Design language:
+Minimalist, strictly black and white (no other colors)
+iOS-style translucent/frosted-glass panels — use Modifier.blur() and semi-transparent surfaces for cards, bottom nav, and dialogs
+Rounded "bubble" UI: pill-shaped buttons, rounded stat cards, circular icons
+Clean system font (Roboto), generous whitespace, soft shadows instead of hard borders
+Smooth Compose animations on navigation and card transitions
+Core features, build in this order:
+Project scaffolding — Compose project, navigation graph, bottom nav (Home/Record/Routes/Stats), theming (black/white + blur system), min SDK 26+.
+Manual activity entry — Room database with Activity entity (type: run/ride/walk/hike/swim/gym, distance, duration, pace/speed, elevation gain, calories, avg/max heart rate, date). CRUD screens: list, detail, add/edit.
+Live GPS recording — Start/pause/stop recording flow with a foreground service (ACCESS_FINE_LOCATION, ACCESS_BACKGROUND_LOCATION, FOREGROUND_SERVICE_LOCATION permissions). Live map view during recording (Google Maps SDK). Store route as ordered ActivityPoint (lat/lng/elevation/timestamp) linked to the activity. Handle battery-optimization prompts so tracking isn't killed.
+Route/elevation display — Post-activity map with the route drawn, plus an elevation profile chart (MPAndroidChart or Vico). GPX import/export for activities.
+Shareable PNG export — On activity finish/detail screen, generate a share-card PNG via Android Canvas: the route path traced, centered, and scaled on a transparent background (no map tiles — just the black/white line silhouette), with a stat block (distance, pace, duration, elevation, date) composited at the bottom. Save to gallery and share via Android's native share sheet — matching Strava's share-card style.
+Route planning — Map screen to tap-and-add points, save as a named Route entity. Browse/filter saved routes by activity type and distance. Turn-by-turn navigation: stub as "Premium," not built in v1.
+Training analysis dashboard — Weekly/monthly totals (distance, time, elevation) as translucent bubble cards with charts. Auto-detected personal records per activity type (fastest pace, longest distance, etc.), stored/updated in a PersonalRecord entity. Training load/fitness score: stub as "Premium," not built in v1.
+Data model (Room entities):
+Activity, ActivityPoint, Route, PersonalRecord
+Permissions: ACCESS_FINE_LOCATION, ACCESS_BACKGROUND_LOCATION, FOREGROUND_SERVICE, FOREGROUND_SERVICE_LOCATION, Bluetooth (for HR straps), media/storage (for saving PNGs)
+Requirements:
+Provide the full Gradle setup and instructions for getting a Google Maps API key
+Include a mock/seed data option so activities can be tested without physically walking around
+After each numbered phase, give clear instructions to build and test on an emulator or device before proceeding
+Ask me clarifying questions before starting if anything is ambiguous

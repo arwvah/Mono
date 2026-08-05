@@ -1,0 +1,378 @@
+package com.mono.fitness.tracking
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.location.Location
+import android.os.Build
+import android.os.Looper
+import androidx.core.app.NotificationCompat
+import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.lifecycleScope
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import com.mono.fitness.MainActivity
+import com.mono.fitness.R
+import com.mono.fitness.data.ActivityPoint
+import com.mono.fitness.data.ActivityType
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+/**
+ * Foreground GPS recording service. Survives screen-off.
+ * UI observes [TrackingController] which mirrors this service state.
+ */
+class TrackingService : LifecycleService() {
+
+    private val fused by lazy { LocationServices.getFusedLocationProviderClient(this) }
+    private var hrClient: HeartRateBleClient? = null
+
+    private var activityType: String = ActivityType.RUN.name
+    private var startedAt: Long = 0L
+    private var movingAccumulated: Long = 0L
+    private var lastResumeAt: Long = 0L
+    private var paused: Boolean = false
+    private val path = mutableListOf<ActivityPoint>()
+    private var lastLocation: Location? = null
+    private var distanceMeters: Double = 0.0
+    private var elevGain: Double = 0.0
+    private var lastElev: Double? = null
+    private var maxSpeed: Double = 0.0
+    private var hrSum: Long = 0L
+    private var hrCount: Int = 0
+    private var maxHr: Int = 0
+    private var currentHr: Int? = null
+
+    private val hrConnected = MutableStateFlow(false)
+    val isHrConnected: StateFlow<Boolean> = hrConnected.asStateFlow()
+
+    private val callback = object : LocationCallback() {
+        override fun onLocationResult(result: LocationResult) {
+            if (paused) return
+            val loc = result.lastLocation ?: return
+            onLocation(loc)
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
+        when (intent?.action) {
+            ACTION_START -> {
+                activityType = intent.getStringExtra(EXTRA_TYPE) ?: ActivityType.RUN.name
+                startRecording()
+            }
+            ACTION_PAUSE -> pause()
+            ACTION_RESUME -> resume()
+            ACTION_STOP -> stopAndFinish()
+        }
+        return START_STICKY
+    }
+
+    private fun startRecording() {
+        startedAt = System.currentTimeMillis()
+        lastResumeAt = startedAt
+        paused = false
+        path.clear()
+        distanceMeters = 0.0
+        elevGain = 0.0
+        lastElev = null
+        maxSpeed = 0.0
+        lastLocation = null
+        hrSum = 0L
+        hrCount = 0
+        maxHr = 0
+        currentHr = null
+        ensureChannel()
+        val notification = buildNotification("Recording…")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIF_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            )
+        } else {
+            startForeground(NOTIF_ID, notification)
+        }
+        requestLocations()
+        startHeartRate()
+        publish()
+        isRunning.value = true
+    }
+
+    private fun startHeartRate() {
+        try {
+            hrClient?.stop()
+            hrClient = HeartRateBleClient(this).also { client ->
+                client.start()
+                lifecycleScope.launch {
+                    hrConnected.value = true
+                    client.bpm.collect { bpm ->
+                        if (bpm != null && !paused) {
+                            currentHr = bpm
+                            hrSum += bpm
+                            hrCount++
+                            maxHr = maxOf(maxHr, bpm)
+                            publish()
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            hrConnected.value = false
+            hrClient = null
+        }
+    }
+
+    private fun stopHeartRate() {
+        try {
+            hrClient?.stop()
+        } catch (_: Exception) {
+        }
+        hrClient = null
+        hrConnected.value = false
+    }
+
+    private fun avgHr(): Int? =
+        if (hrCount > 0) (hrSum / hrCount).toInt() else null
+
+    private fun requestLocations() {
+        val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L)
+            .setMinUpdateIntervalMillis(1000L)
+            .setMinUpdateDistanceMeters(2f)
+            .setWaitForAccurateLocation(false)
+            .build()
+        try {
+            fused.requestLocationUpdates(req, callback, Looper.getMainLooper())
+        } catch (_: SecurityException) {
+            stopSelf()
+        }
+    }
+
+    private fun onLocation(loc: Location) {
+        val elev = if (loc.hasAltitude()) loc.altitude else null
+        lastLocation?.let { prev ->
+            val d = prev.distanceTo(loc).toDouble()
+            if (d < 100) distanceMeters += d // filter GPS jumps
+        }
+        elev?.let { e ->
+            lastElev?.let { prev ->
+                val g = e - prev
+                if (g > 0 && g < 30) elevGain += g
+            }
+            lastElev = e
+        }
+        if (loc.hasSpeed()) {
+            maxSpeed = maxOf(maxSpeed, loc.speed.toDouble())
+        }
+        lastLocation = loc
+        path += ActivityPoint(
+            activityId = 0,
+            latitude = loc.latitude,
+            longitude = loc.longitude,
+            elevationMeters = elev,
+            timestampMillis = loc.time.takeIf { it > 0 } ?: System.currentTimeMillis(),
+            speedMps = if (loc.hasSpeed()) loc.speed.toDouble() else null,
+            accuracyMeters = if (loc.hasAccuracy()) loc.accuracy else null,
+            sequence = path.size
+        )
+        publish()
+        updateNotification()
+    }
+
+    private fun pause() {
+        if (paused) return
+        paused = true
+        movingAccumulated += System.currentTimeMillis() - lastResumeAt
+        fused.removeLocationUpdates(callback)
+        publish()
+        updateNotification()
+    }
+
+    private fun resume() {
+        if (!paused) return
+        paused = false
+        lastResumeAt = System.currentTimeMillis()
+        requestLocations()
+        publish()
+        updateNotification()
+    }
+
+    private fun stopAndFinish() {
+        fused.removeLocationUpdates(callback)
+        stopHeartRate()
+        if (!paused) {
+            movingAccumulated += System.currentTimeMillis() - lastResumeAt
+        }
+        val end = System.currentTimeMillis()
+        val duration = end - startedAt
+        val moving = movingAccumulated.coerceAtLeast(1L)
+        val snapshot = TrackingSnapshot(
+            type = activityType,
+            points = path.toList(),
+            distanceMeters = distanceMeters,
+            durationMillis = duration,
+            movingTimeMillis = moving,
+            elevationGainMeters = elevGain,
+            maxSpeedMps = maxSpeed,
+            startTimeMillis = startedAt,
+            endTimeMillis = end,
+            paused = false,
+            recording = false,
+            currentHeartRate = currentHr,
+            avgHeartRate = avgHr(),
+            maxHeartRate = maxHr.takeIf { it > 0 }
+        )
+        lastFinished.value = snapshot
+        liveState.value = snapshot
+        isRunning.value = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun publish() {
+        val now = System.currentTimeMillis()
+        val moving = if (paused) movingAccumulated else movingAccumulated + (now - lastResumeAt)
+        liveState.value = TrackingSnapshot(
+            type = activityType,
+            points = path.toList(),
+            distanceMeters = distanceMeters,
+            durationMillis = now - startedAt,
+            movingTimeMillis = moving,
+            elevationGainMeters = elevGain,
+            maxSpeedMps = maxSpeed,
+            startTimeMillis = startedAt,
+            endTimeMillis = now,
+            paused = paused,
+            recording = true,
+            currentHeartRate = currentHr,
+            avgHeartRate = avgHr(),
+            maxHeartRate = maxHr.takeIf { it > 0 }
+        )
+    }
+
+    private fun ensureChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val mgr = getSystemService(NotificationManager::class.java)
+            mgr.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ID,
+                    getString(R.string.tracking_notification_channel),
+                    NotificationManager.IMPORTANCE_LOW
+                )
+            )
+        }
+    }
+
+    private fun buildNotification(text: String): Notification {
+        val open = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(getString(R.string.tracking_notification_title))
+            .setContentText(text)
+            .setSmallIcon(R.drawable.ic_stat_record)
+            .setContentIntent(open)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .build()
+    }
+
+    private fun updateNotification() {
+        val text = if (paused) "Paused" else
+            String.format("%.2f km · recording", distanceMeters / 1000.0)
+        val mgr = getSystemService(NotificationManager::class.java)
+        mgr.notify(NOTIF_ID, buildNotification(text))
+    }
+
+    override fun onDestroy() {
+        fused.removeLocationUpdates(callback)
+        stopHeartRate()
+        isRunning.value = false
+        super.onDestroy()
+    }
+
+    companion object {
+        const val ACTION_START = "com.mono.fitness.tracking.START"
+        const val ACTION_PAUSE = "com.mono.fitness.tracking.PAUSE"
+        const val ACTION_RESUME = "com.mono.fitness.tracking.RESUME"
+        const val ACTION_STOP = "com.mono.fitness.tracking.STOP"
+        const val EXTRA_TYPE = "type"
+
+        private const val CHANNEL_ID = "mono_tracking"
+        private const val NOTIF_ID = 42
+
+        val liveState = MutableStateFlow(TrackingSnapshot())
+        val lastFinished = MutableStateFlow<TrackingSnapshot?>(null)
+        val isRunning = MutableStateFlow(false)
+        private val hrConnected = MutableStateFlow(false)
+        val isHrConnected: StateFlow<Boolean> = hrConnected.asStateFlow()
+    }
+}
+
+data class TrackingSnapshot(
+    val type: String = ActivityType.RUN.name,
+    val points: List<ActivityPoint> = emptyList(),
+    val distanceMeters: Double = 0.0,
+    val durationMillis: Long = 0L,
+    val movingTimeMillis: Long = 0L,
+    val elevationGainMeters: Double = 0.0,
+    val maxSpeedMps: Double = 0.0,
+    val startTimeMillis: Long = 0L,
+    val endTimeMillis: Long = 0L,
+    val paused: Boolean = false,
+    val recording: Boolean = false,
+    val currentHeartRate: Int? = null,
+    val avgHeartRate: Int? = null,
+    val maxHeartRate: Int? = null
+)
+
+object TrackingController {
+    val state = TrackingService.liveState
+    val finished = TrackingService.lastFinished
+    val running = TrackingService.isRunning
+    val hrConnected = TrackingService.isHrConnected
+
+    fun start(context: android.content.Context, type: ActivityType) {
+        val i = Intent(context, TrackingService::class.java).apply {
+            action = TrackingService.ACTION_START
+            putExtra(TrackingService.EXTRA_TYPE, type.name)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(i)
+        } else {
+            context.startService(i)
+        }
+    }
+
+    fun pause(context: android.content.Context) {
+        context.startService(
+            Intent(context, TrackingService::class.java).setAction(TrackingService.ACTION_PAUSE)
+        )
+    }
+
+    fun resume(context: android.content.Context) {
+        context.startService(
+            Intent(context, TrackingService::class.java).setAction(TrackingService.ACTION_RESUME)
+        )
+    }
+
+    fun stop(context: android.content.Context) {
+        context.startService(
+            Intent(context, TrackingService::class.java).setAction(TrackingService.ACTION_STOP)
+        )
+    }
+
+    fun clearFinished() {
+        TrackingService.lastFinished.value = null
+    }
+}

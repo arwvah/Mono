@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Mono</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_record">Record</string>
+    <string name="nav_routes">Routes</string>
+    <string name="nav_stats">Stats</string>
+    <string name="tracking_notification_channel">Activity recording</string>
+    <string name="tracking_notification_title">Recording activity</string>
+    <string name="tracking_notification_text">Mono is tracking your route</string>
+    <string name="premium_stub">Premium — coming soon</string>
+</resources>

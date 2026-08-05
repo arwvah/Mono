@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <cache-path name="share_cache" path="share/" />
+    <cache-path name="gpx_cache" path="gpx/" />
+    <external-cache-path name="external_share" path="share/" />
+    <files-path name="gpx" path="gpx/" />
+</paths>

@@ -1,0 +1,32 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Subtle Drop Shadow for depth -->
+    <path
+        android:fillColor="#000000"
+        android:fillAlpha="0.2"
+        android:pathData="M54,36 C48,36 44,30 40,24 C38,30 34,44 34,56 L34,70 C34,84 44,90 54,90 C64,90 74,84 74,70 L74,56 C74,44 70,30 68,24 C64,30 60,36 54,36 Z" />
+
+    <!-- Main Batman Head (Cowl) - Polished Silhouette -->
+    <path
+        android:fillColor="#121212"
+        android:pathData="M54,35 C48,35 44,29 40,23 C38,29 34,43 34,55 L34,68 C34,82 43,87 54,87 C65,87 74,82 74,68 L74,55 C74,43 70,29 68,23 C64,29 60,35 54,35 Z" />
+
+    <!-- Soft highlight layer for rounded appearance -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.05"
+        android:pathData="M54,35 C48,35 45,32 42,27 C40,32 37,45 37,55 L37,68 C37,80 44,83 54,83 C64,83 71,80 71,68 L71,55 C71,45 68,32 66,27 C63,32 60,35 54,35 Z" />
+
+    <!-- Minimalist High-Contrast Eyes -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M42,56 C44,56 48,59 49,60 C49,61 48,62 41,59 C40,58 41,57 42,56 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M66,56 C64,56 60,59 59,60 C59,61 60,62 67,59 C68,58 67,57 66,56 Z" />
+
+</vector>
