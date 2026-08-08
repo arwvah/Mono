@@ -33,7 +33,6 @@ import com.mono.fitness.ui.components.TypeChip
 import com.mono.fitness.ui.theme.FrostedPanel
 import com.mono.fitness.ui.theme.MonoScaffoldBackground
 import com.mono.fitness.util.Formatters
-import kotlinx.coroutines.launch
 
 @Composable
 fun RecordScreen(
@@ -41,11 +40,20 @@ fun RecordScreen(
     onSaved: (Long) -> Unit
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val snapshot by TrackingController.state.collectAsState()
     val running by TrackingController.running.collectAsState()
     val finished by TrackingController.finished.collectAsState()
     var selectedType by remember { mutableStateOf(ActivityType.RUN) }
+    var finishRequested by remember { mutableStateOf(false) }
+    var lastSavedSessionId by remember { mutableLongStateOf(-1L) }
+
+    // Reset local finish lock when a new session starts.
+    LaunchedEffect(running) {
+        if (running) {
+            finishRequested = false
+            lastSavedSessionId = -1L
+        }
+    }
     var hasLocationPermission by remember {
         mutableStateOf(
             context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -68,43 +76,52 @@ fun RecordScreen(
         }
     }
 
+    // Single-save path: consumeFinished() claims the snapshot once (by sessionId),
+    // so recomposition, double STOP, or a second collector cannot insert duplicates.
     LaunchedEffect(finished) {
-        val fin = finished ?: return@LaunchedEffect
-        if (fin.points.isEmpty() && fin.distanceMeters < 5) {
-            TrackingController.clearFinished()
+        if (finished == null) return@LaunchedEffect
+        val fin = TrackingController.consumeFinished() ?: return@LaunchedEffect
+        if (fin.sessionId != 0L && fin.sessionId == lastSavedSessionId) {
+            finishRequested = false
             return@LaunchedEffect
         }
-        scope.launch {
-            val type = ActivityType.fromName(fin.type)
-            val cal = MonoRepository.estimateCalories(type, fin.distanceMeters, fin.movingTimeMillis)
-            val avg = if (fin.movingTimeMillis > 0)
-                fin.distanceMeters / (fin.movingTimeMillis / 1000.0) else 0.0
-            val id = repo.saveActivity(
-                Activity(
-                    type = fin.type,
-                    title = "${type.label} · ${Formatters.date(fin.startTimeMillis)}",
-                    distanceMeters = fin.distanceMeters,
-                    durationMillis = fin.durationMillis,
-                    movingTimeMillis = fin.movingTimeMillis,
-                    avgSpeedMps = avg,
-                    maxSpeedMps = fin.maxSpeedMps,
-                    elevationGainMeters = fin.elevationGainMeters,
-                    calories = cal,
-                    avgHeartRate = fin.avgHeartRate,
-                    maxHeartRate = fin.maxHeartRate,
-                    startTimeMillis = fin.startTimeMillis,
-                    endTimeMillis = fin.endTimeMillis,
-                    isManual = false,
-                    source = "gps"
-                ),
-                fin.points
-            )
-            TrackingController.clearFinished()
-            onSaved(id)
+        if (fin.points.isEmpty() && fin.distanceMeters < 5) {
+            finishRequested = false
+            return@LaunchedEffect
         }
+        val type = ActivityType.fromName(fin.type)
+        val cal = MonoRepository.estimateCalories(type, fin.distanceMeters, fin.movingTimeMillis)
+        val avg = if (fin.movingTimeMillis > 0)
+            fin.distanceMeters / (fin.movingTimeMillis / 1000.0) else 0.0
+        val id = repo.saveActivity(
+            Activity(
+                id = 0,
+                type = fin.type,
+                title = "${type.label} · ${Formatters.date(fin.startTimeMillis)}",
+                distanceMeters = fin.distanceMeters,
+                durationMillis = fin.durationMillis,
+                movingTimeMillis = fin.movingTimeMillis,
+                avgSpeedMps = avg,
+                maxSpeedMps = fin.maxSpeedMps,
+                elevationGainMeters = fin.elevationGainMeters,
+                calories = cal,
+                avgHeartRate = fin.avgHeartRate,
+                maxHeartRate = fin.maxHeartRate,
+                startTimeMillis = fin.startTimeMillis,
+                endTimeMillis = fin.endTimeMillis,
+                isManual = false,
+                source = "gps"
+            ),
+            fin.points
+        )
+        lastSavedSessionId = fin.sessionId
+        onSaved(id)
     }
 
     val points = snapshot.points.map { LatLng(it.latitude, it.longitude) }
+    // Prefer live snapshot over the running flag so a brief service rebind
+    // after pause/resume does not flash zeros on the HUD.
+    val sessionLive = snapshot.recording
 
     MonoScaffoldBackground {
         Column(Modifier.fillMaxSize()) {
@@ -116,7 +133,7 @@ fun RecordScreen(
                 RouteMap(
                     points = points,
                     modifier = Modifier.fillMaxSize(),
-                    followLast = running && !snapshot.paused,
+                    followLast = snapshot.recording && !snapshot.paused,
                     showMyLocation = hasLocationPermission
                 )
                 
@@ -131,7 +148,7 @@ fun RecordScreen(
                     FrostedPanel(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(24.dp)) {
                             Text(
-                                if (!running) "READY"
+                                if (!snapshot.recording) "READY"
                                 else if (snapshot.paused) "PAUSED"
                                 else "RECORDING",
                                 style = MaterialTheme.typography.labelSmall,
@@ -140,7 +157,7 @@ fun RecordScreen(
                             Spacer(Modifier.height(8.dp))
                             Text(
                                 Formatters.distanceKm(
-                                    if (running) snapshot.distanceMeters else 0.0
+                                    if (sessionLive) snapshot.distanceMeters else 0.0
                                 ),
                                 style = MaterialTheme.typography.displayLarge,
                                 fontWeight = FontWeight.Bold
@@ -152,14 +169,14 @@ fun RecordScreen(
                             ) {
                                 StatBubble(
                                     "Time",
-                                    Formatters.duration(if (running) snapshot.durationMillis else 0),
+                                    Formatters.duration(if (sessionLive) snapshot.durationMillis else 0),
                                     Modifier.weight(1f)
                                 )
                                 StatBubble(
                                     "Pace",
                                     Formatters.paceFromActivity(
-                                        snapshot.distanceMeters,
-                                        snapshot.movingTimeMillis
+                                        if (sessionLive) snapshot.distanceMeters else 0.0,
+                                        if (sessionLive) snapshot.movingTimeMillis else 0L
                                     ),
                                     Modifier.weight(1f)
                                 )
@@ -172,17 +189,17 @@ fun RecordScreen(
                                 StatBubble(
                                     "Elev",
                                     Formatters.elevation(
-                                        if (running) snapshot.elevationGainMeters else 0.0
+                                        if (sessionLive) snapshot.elevationGainMeters else 0.0
                                     ),
                                     Modifier.weight(1f)
                                 )
                                 StatBubble(
                                     "HR",
                                     Formatters.heartRate(
-                                        if (running) snapshot.currentHeartRate else null
+                                        if (sessionLive) snapshot.currentHeartRate else null
                                     ),
                                     modifier = Modifier.weight(1f),
-                                    badge = if (running) {
+                                    badge = if (sessionLive) {
                                         val conn by TrackingController.hrConnected.collectAsState(initial = false)
                                         if (conn) "LIVE" else null
                                     } else null
@@ -203,7 +220,7 @@ fun RecordScreen(
                     Modifier.padding(24.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    if (!running) {
+                    if (!sessionLive) {
                         Text(
                             "ACTIVITY TYPE", 
                             style = MaterialTheme.typography.labelSmall,
@@ -253,8 +270,12 @@ fun RecordScreen(
                                 filled = false
                             )
                             PillButton(
-                                text = "Finish",
-                                onClick = { TrackingController.stop(context) },
+                                text = if (finishRequested) "Saving…" else "Finish",
+                                onClick = {
+                                    if (finishRequested) return@PillButton
+                                    finishRequested = true
+                                    TrackingController.stop(context)
+                                },
                                 modifier = Modifier.weight(1f)
                             )
                         }

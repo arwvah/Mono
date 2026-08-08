@@ -25,40 +25,28 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Foreground GPS recording service. Survives screen-off.
- * UI observes [TrackingController] which mirrors this service state.
+ *
+ * Session metrics live in [Session] (process-scoped companion state) so a service
+ * restart, pause, or resume never wipes distance / elevation / time mid-workout.
+ * UI observes [TrackingController], which mirrors that state.
  */
 class TrackingService : LifecycleService() {
 
     private val fused by lazy { LocationServices.getFusedLocationProviderClient(this) }
     private var hrClient: HeartRateBleClient? = null
-
-    private var activityType: String = ActivityType.RUN.name
-    private var startedAt: Long = 0L
-    private var movingAccumulated: Long = 0L
-    private var lastResumeAt: Long = 0L
-    private var paused: Boolean = false
-    private val path = mutableListOf<ActivityPoint>()
-    private var lastLocation: Location? = null
-    private var distanceMeters: Double = 0.0
-    private var elevGain: Double = 0.0
-    private var lastElev: Double? = null
-    private var maxSpeed: Double = 0.0
-    private var hrSum: Long = 0L
-    private var hrCount: Int = 0
-    private var maxHr: Int = 0
-    private var currentHr: Int? = null
-
-    private val hrConnected = MutableStateFlow(false)
-    val isHrConnected: StateFlow<Boolean> = hrConnected.asStateFlow()
+    private var locationsRequested: Boolean = false
 
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
-            if (paused) return
+            val session = Session.current ?: return
+            if (session.paused) return
             val loc = result.lastLocation ?: return
-            onLocation(loc)
+            onLocation(session, loc)
         }
     }
 
@@ -66,32 +54,61 @@ class TrackingService : LifecycleService() {
         super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
             ACTION_START -> {
-                activityType = intent.getStringExtra(EXTRA_TYPE) ?: ActivityType.RUN.name
-                startRecording()
+                val type = intent.getStringExtra(EXTRA_TYPE) ?: ActivityType.RUN.name
+                startRecording(type)
             }
             ACTION_PAUSE -> pause()
             ACTION_RESUME -> resume()
             ACTION_STOP -> stopAndFinish()
+            null -> {
+                // Process/service restart with no action: keep an in-progress session alive.
+                if (Session.current != null) {
+                    ensureForeground()
+                    requestLocations()
+                    publish()
+                    isRunning.value = true
+                }
+            }
         }
-        return START_STICKY
+        // NOT_STICKY: do not redeliver START (which would look like a fresh session).
+        return START_NOT_STICKY
     }
 
-    private fun startRecording() {
-        startedAt = System.currentTimeMillis()
-        lastResumeAt = startedAt
-        paused = false
-        path.clear()
-        distanceMeters = 0.0
-        elevGain = 0.0
-        lastElev = null
-        maxSpeed = 0.0
-        lastLocation = null
-        hrSum = 0L
-        hrCount = 0
-        maxHr = 0
-        currentHr = null
+    private fun startRecording(type: String) {
+        // Duplicate START (double-tap / accidental redelivery) must not wipe progress.
+        val existing = Session.current
+        if (existing != null && !existing.finishing) {
+            ensureForeground()
+            requestLocations()
+            publish()
+            isRunning.value = true
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        Session.current = Session(
+            id = nextSessionId.incrementAndGet(),
+            activityType = type,
+            startedAt = now,
+            lastResumeAt = now
+        )
         ensureChannel()
-        val notification = buildNotification("Recording…")
+        ensureForeground()
+        requestLocations()
+        startHeartRate()
+        publish()
+        isRunning.value = true
+    }
+
+    private fun ensureForeground() {
+        val session = Session.current
+        val notification = buildNotification(
+            when {
+                session == null -> "Recording…"
+                session.paused -> "Paused"
+                else -> "Recording…"
+            }
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIF_ID,
@@ -101,10 +118,6 @@ class TrackingService : LifecycleService() {
         } else {
             startForeground(NOTIF_ID, notification)
         }
-        requestLocations()
-        startHeartRate()
-        publish()
-        isRunning.value = true
     }
 
     private fun startHeartRate() {
@@ -113,20 +126,21 @@ class TrackingService : LifecycleService() {
             hrClient = HeartRateBleClient(this).also { client ->
                 client.start()
                 lifecycleScope.launch {
-                    hrConnected.value = true
+                    companionHrConnected.value = true
                     client.bpm.collect { bpm ->
-                        if (bpm != null && !paused) {
-                            currentHr = bpm
-                            hrSum += bpm
-                            hrCount++
-                            maxHr = maxOf(maxHr, bpm)
+                        val session = Session.current ?: return@collect
+                        if (bpm != null && !session.paused && !session.finishing) {
+                            session.currentHr = bpm
+                            session.hrSum += bpm
+                            session.hrCount++
+                            session.maxHr = maxOf(session.maxHr, bpm)
                             publish()
                         }
                     }
                 }
             }
         } catch (_: Exception) {
-            hrConnected.value = false
+            companionHrConnected.value = false
             hrClient = null
         }
     }
@@ -137,13 +151,11 @@ class TrackingService : LifecycleService() {
         } catch (_: Exception) {
         }
         hrClient = null
-        hrConnected.value = false
+        companionHrConnected.value = false
     }
 
-    private fun avgHr(): Int? =
-        if (hrCount > 0) (hrSum / hrCount).toInt() else null
-
     private fun requestLocations() {
+        if (locationsRequested) return
         val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L)
             .setMinUpdateIntervalMillis(1000L)
             .setMinUpdateDistanceMeters(2f)
@@ -151,29 +163,40 @@ class TrackingService : LifecycleService() {
             .build()
         try {
             fused.requestLocationUpdates(req, callback, Looper.getMainLooper())
+            locationsRequested = true
         } catch (_: SecurityException) {
-            stopSelf()
+            locationsRequested = false
+            // Do not stopSelf here — session state must stay until the user finishes.
         }
     }
 
-    private fun onLocation(loc: Location) {
+    private fun stopLocationUpdates() {
+        if (!locationsRequested) return
+        try {
+            fused.removeLocationUpdates(callback)
+        } catch (_: Exception) {
+        }
+        locationsRequested = false
+    }
+
+    private fun onLocation(session: Session, loc: Location) {
         val elev = if (loc.hasAltitude()) loc.altitude else null
-        lastLocation?.let { prev ->
+        session.lastLocation?.let { prev ->
             val d = prev.distanceTo(loc).toDouble()
-            if (d < 100) distanceMeters += d // filter GPS jumps
+            if (d < 100) session.distanceMeters += d // filter GPS jumps
         }
         elev?.let { e ->
-            lastElev?.let { prev ->
+            session.lastElev?.let { prev ->
                 val g = e - prev
-                if (g > 0 && g < 30) elevGain += g
+                if (g > 0 && g < 30) session.elevGain += g
             }
-            lastElev = e
+            session.lastElev = e
         }
         if (loc.hasSpeed()) {
-            maxSpeed = maxOf(maxSpeed, loc.speed.toDouble())
+            session.maxSpeed = maxOf(session.maxSpeed, loc.speed.toDouble())
         }
-        lastLocation = loc
-        path += ActivityPoint(
+        session.lastLocation = loc
+        session.path += ActivityPoint(
             activityId = 0,
             latitude = loc.latitude,
             longitude = loc.longitude,
@@ -181,80 +204,135 @@ class TrackingService : LifecycleService() {
             timestampMillis = loc.time.takeIf { it > 0 } ?: System.currentTimeMillis(),
             speedMps = if (loc.hasSpeed()) loc.speed.toDouble() else null,
             accuracyMeters = if (loc.hasAccuracy()) loc.accuracy else null,
-            sequence = path.size
+            sequence = session.path.size
         )
         publish()
         updateNotification()
     }
 
+    /**
+     * startForegroundService() requires startForeground() quickly. Control intents
+     * on a cold service with no session promote briefly then tear down.
+     */
+    private fun acknowledgeForegroundOrStopIfIdle(): Boolean {
+        ensureChannel()
+        ensureForeground()
+        val session = Session.current
+        if (session != null && !session.finishing) return true
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        return false
+    }
+
     private fun pause() {
-        if (paused) return
-        paused = true
-        movingAccumulated += System.currentTimeMillis() - lastResumeAt
-        fused.removeLocationUpdates(callback)
+        if (!acknowledgeForegroundOrStopIfIdle()) return
+        val session = Session.current ?: return
+        if (session.paused) {
+            updateNotification()
+            return
+        }
+        session.paused = true
+        session.movingAccumulated += System.currentTimeMillis() - session.lastResumeAt
+        // Keep GPS subscribed while paused so the location FGS stays valid and
+        // resume does not re-bind from a wiped / half-dead service. Callback
+        // already ignores fixes when paused == true.
+        // Drop last fix so the first point after resume does not add pause travel.
+        session.lastLocation = null
         publish()
         updateNotification()
     }
 
     private fun resume() {
-        if (!paused) return
-        paused = false
-        lastResumeAt = System.currentTimeMillis()
+        if (!acknowledgeForegroundOrStopIfIdle()) return
+        val session = Session.current ?: return
+        if (!session.paused) {
+            requestLocations()
+            publish()
+            updateNotification()
+            return
+        }
+        session.paused = false
+        session.lastResumeAt = System.currentTimeMillis()
+        session.lastLocation = null
         requestLocations()
+        // Ensure UI / running flag stay consistent after a service rebind.
+        isRunning.value = true
         publish()
         updateNotification()
     }
 
     private fun stopAndFinish() {
-        fused.removeLocationUpdates(callback)
+        // startForegroundService(STOP) still requires a startForeground call.
+        ensureChannel()
+        ensureForeground()
+
+        val session = Session.current
+        // Guard against double Finish / second service instance: only the first
+        // successful claim publishes a finished snapshot.
+        if (session == null || session.finishing || !session.claimFinish()) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        stopLocationUpdates()
         stopHeartRate()
-        if (!paused) {
-            movingAccumulated += System.currentTimeMillis() - lastResumeAt
+        if (!session.paused) {
+            session.movingAccumulated += System.currentTimeMillis() - session.lastResumeAt
         }
         val end = System.currentTimeMillis()
-        val duration = end - startedAt
-        val moving = movingAccumulated.coerceAtLeast(1L)
+        val duration = (end - session.startedAt).coerceAtLeast(0L)
+        val moving = session.movingAccumulated.coerceAtLeast(1L)
         val snapshot = TrackingSnapshot(
-            type = activityType,
-            points = path.toList(),
-            distanceMeters = distanceMeters,
+            type = session.activityType,
+            points = session.path.toList(),
+            distanceMeters = session.distanceMeters,
             durationMillis = duration,
             movingTimeMillis = moving,
-            elevationGainMeters = elevGain,
-            maxSpeedMps = maxSpeed,
-            startTimeMillis = startedAt,
+            elevationGainMeters = session.elevGain,
+            maxSpeedMps = session.maxSpeed,
+            startTimeMillis = session.startedAt,
             endTimeMillis = end,
             paused = false,
             recording = false,
-            currentHeartRate = currentHr,
-            avgHeartRate = avgHr(),
-            maxHeartRate = maxHr.takeIf { it > 0 }
+            currentHeartRate = session.currentHr,
+            avgHeartRate = session.avgHr(),
+            maxHeartRate = session.maxHr.takeIf { it > 0 },
+            sessionId = session.id
         )
+        // Publish finished once, then clear live session.
         lastFinished.value = snapshot
         liveState.value = snapshot
         isRunning.value = false
+        Session.current = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     private fun publish() {
+        val session = Session.current ?: return
         val now = System.currentTimeMillis()
-        val moving = if (paused) movingAccumulated else movingAccumulated + (now - lastResumeAt)
+        val moving = if (session.paused) {
+            session.movingAccumulated
+        } else {
+            session.movingAccumulated + (now - session.lastResumeAt)
+        }
         liveState.value = TrackingSnapshot(
-            type = activityType,
-            points = path.toList(),
-            distanceMeters = distanceMeters,
-            durationMillis = now - startedAt,
+            type = session.activityType,
+            points = session.path.toList(),
+            distanceMeters = session.distanceMeters,
+            durationMillis = (now - session.startedAt).coerceAtLeast(0L),
             movingTimeMillis = moving,
-            elevationGainMeters = elevGain,
-            maxSpeedMps = maxSpeed,
-            startTimeMillis = startedAt,
+            elevationGainMeters = session.elevGain,
+            maxSpeedMps = session.maxSpeed,
+            startTimeMillis = session.startedAt,
             endTimeMillis = now,
-            paused = paused,
+            paused = session.paused,
             recording = true,
-            currentHeartRate = currentHr,
-            avgHeartRate = avgHr(),
-            maxHeartRate = maxHr.takeIf { it > 0 }
+            currentHeartRate = session.currentHr,
+            avgHeartRate = session.avgHr(),
+            maxHeartRate = session.maxHr.takeIf { it > 0 },
+            sessionId = session.id
         )
     }
 
@@ -288,17 +366,65 @@ class TrackingService : LifecycleService() {
     }
 
     private fun updateNotification() {
-        val text = if (paused) "Paused" else
-            String.format("%.2f km · recording", distanceMeters / 1000.0)
+        val session = Session.current
+        val text = when {
+            session == null -> "Recording…"
+            session.paused -> "Paused"
+            else -> String.format("%.2f km · recording", session.distanceMeters / 1000.0)
+        }
         val mgr = getSystemService(NotificationManager::class.java)
         mgr.notify(NOTIF_ID, buildNotification(text))
     }
 
     override fun onDestroy() {
-        fused.removeLocationUpdates(callback)
+        stopLocationUpdates()
         stopHeartRate()
-        isRunning.value = false
+        // Only clear running if we did not already hand off a finished snapshot.
+        // Keep Session.current so a quick rebind can continue the same workout.
+        if (Session.current?.finishing != true && lastFinished.value == null) {
+            // If the session is still active, leave isRunning true so the UI does
+            // not flash READY with zeros while the process still holds Session.
+            if (Session.current == null) {
+                isRunning.value = false
+            }
+        }
         super.onDestroy()
+    }
+
+    /**
+     * In-memory workout session. Process-scoped so pause/resume and service
+     * instance churn do not reset distance, elevation, or timers.
+     */
+    private class Session(
+        val id: Long,
+        var activityType: String,
+        val startedAt: Long,
+        var lastResumeAt: Long,
+        var movingAccumulated: Long = 0L,
+        var paused: Boolean = false,
+        val path: MutableList<ActivityPoint> = mutableListOf(),
+        var lastLocation: Location? = null,
+        var distanceMeters: Double = 0.0,
+        var elevGain: Double = 0.0,
+        var lastElev: Double? = null,
+        var maxSpeed: Double = 0.0,
+        var hrSum: Long = 0L,
+        var hrCount: Int = 0,
+        var maxHr: Int = 0,
+        var currentHr: Int? = null
+    ) {
+        private val finishClaimed = AtomicBoolean(false)
+        val finishing: Boolean get() = finishClaimed.get()
+
+        fun claimFinish(): Boolean = finishClaimed.compareAndSet(false, true)
+
+        fun avgHr(): Int? =
+            if (hrCount > 0) (hrSum / hrCount).toInt() else null
+
+        companion object {
+            @Volatile
+            var current: Session? = null
+        }
     }
 
     companion object {
@@ -311,11 +437,13 @@ class TrackingService : LifecycleService() {
         private const val CHANNEL_ID = "mono_tracking"
         private const val NOTIF_ID = 42
 
+        private val nextSessionId = AtomicLong(0)
+
         val liveState = MutableStateFlow(TrackingSnapshot())
         val lastFinished = MutableStateFlow<TrackingSnapshot?>(null)
         val isRunning = MutableStateFlow(false)
-        private val hrConnected = MutableStateFlow(false)
-        val isHrConnected: StateFlow<Boolean> = hrConnected.asStateFlow()
+        private val companionHrConnected = MutableStateFlow(false)
+        val isHrConnected: StateFlow<Boolean> = companionHrConnected.asStateFlow()
     }
 }
 
@@ -333,7 +461,9 @@ data class TrackingSnapshot(
     val recording: Boolean = false,
     val currentHeartRate: Int? = null,
     val avgHeartRate: Int? = null,
-    val maxHeartRate: Int? = null
+    val maxHeartRate: Int? = null,
+    /** Monotonic id for this workout; used to dedupe finish saves. */
+    val sessionId: Long = 0L
 )
 
 object TrackingController {
@@ -342,11 +472,16 @@ object TrackingController {
     val running = TrackingService.isRunning
     val hrConnected = TrackingService.isHrConnected
 
-    fun start(context: android.content.Context, type: ActivityType) {
+    /** Last session id that was successfully handed to the UI for saving. */
+    private val consumedFinishedSessionId = AtomicLong(-1L)
+
+    private fun send(context: android.content.Context, action: String, configure: Intent.() -> Unit = {}) {
         val i = Intent(context, TrackingService::class.java).apply {
-            action = TrackingService.ACTION_START
-            putExtra(TrackingService.EXTRA_TYPE, type.name)
+            this.action = action
+            configure()
         }
+        // Always use startForegroundService on O+ so pause/resume/stop reach the
+        // FGS reliably (plain startService can fail or spawn a cold instance).
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(i)
         } else {
@@ -354,25 +489,42 @@ object TrackingController {
         }
     }
 
+    fun start(context: android.content.Context, type: ActivityType) {
+        send(context, TrackingService.ACTION_START) {
+            putExtra(TrackingService.EXTRA_TYPE, type.name)
+        }
+    }
+
     fun pause(context: android.content.Context) {
-        context.startService(
-            Intent(context, TrackingService::class.java).setAction(TrackingService.ACTION_PAUSE)
-        )
+        send(context, TrackingService.ACTION_PAUSE)
     }
 
     fun resume(context: android.content.Context) {
-        context.startService(
-            Intent(context, TrackingService::class.java).setAction(TrackingService.ACTION_RESUME)
-        )
+        send(context, TrackingService.ACTION_RESUME)
     }
 
     fun stop(context: android.content.Context) {
-        context.startService(
-            Intent(context, TrackingService::class.java).setAction(TrackingService.ACTION_STOP)
-        )
+        send(context, TrackingService.ACTION_STOP)
     }
 
     fun clearFinished() {
         TrackingService.lastFinished.value = null
+    }
+
+    /**
+     * Atomically claim a finished snapshot for persistence. Returns the snapshot
+     * once; any later call with the same [TrackingSnapshot.sessionId] returns null
+     * so the activity feed cannot get two identical rows.
+     */
+    @Synchronized
+    fun consumeFinished(): TrackingSnapshot? {
+        val fin = TrackingService.lastFinished.value ?: return null
+        TrackingService.lastFinished.value = null
+        if (fin.sessionId != 0L) {
+            val prev = consumedFinishedSessionId.get()
+            if (fin.sessionId == prev) return null
+            consumedFinishedSessionId.set(fin.sessionId)
+        }
+        return fin
     }
 }
