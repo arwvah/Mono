@@ -16,11 +16,6 @@ jobs:
           distribution: temurin
           java-version: 17
           cache: gradle
-      - uses: android-actions/setup-android@v3
-        with:
-          api-level: 35
-          ndk: 26.1.10909118
-          cache-disabled: true
       - name: Make gradlew executable
         run: chmod +x gradlew
       - name: Decode local.properties
