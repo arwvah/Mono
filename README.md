@@ -21,7 +21,8 @@ Log activities, record live GPS sessions, plan routes, and review training stats
 - Shareable PNG route cards with true-aspect silhouette
 - Route planning with tap-to-add waypoints, elevation lookup, and distance filters
 - Weekly / monthly stats and auto-calculated personal records
-- Built-in seed data with realistic GPS routes and elevation profiles for immediate testing
+- Instant on-device persistence: sessions are created and saved as soon as you tap Start Session
+- Clean local database with zero mock data (100% user-recorded sessions and GPX imports)
 - Optional BLE heart-rate strap support during recording
 
 No account, no backend, no cloud sync. The app opens straight to the feed.
@@ -78,7 +79,7 @@ MAPS_API_KEY=AIza...your_real_key...
 
 ```
 app/src/main/java/com/mono/fitness/
-  data/           Room entities, DAOs, repository, seed data
+  data/           Room entities, DAOs, repository
   tracking/       Foreground GPS recording service
   ui/
     theme/        Black/white theme, frosted panels

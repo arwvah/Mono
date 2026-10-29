@@ -3,7 +3,6 @@ package com.mono.fitness
 import android.app.Application
 import com.mono.fitness.data.MonoDatabase
 import com.mono.fitness.data.MonoRepository
-import com.mono.fitness.data.SeedData
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -24,11 +23,6 @@ class MonoApp : Application() {
             if (!prefs.getBoolean("prs_cleared_v2", false)) {
                 repository.clearPersonalRecords()
                 prefs.edit().putBoolean("prs_cleared_v2", true).apply()
-            }
-        }
-        if (BuildConfig.SEED_DATA) {
-            appScope.launch {
-                SeedData.seedIfEmpty(repository)
             }
         }
     }

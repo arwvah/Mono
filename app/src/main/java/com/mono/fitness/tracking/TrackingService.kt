@@ -22,9 +22,15 @@ import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.mono.fitness.MainActivity
+import com.mono.fitness.MonoApp
 import com.mono.fitness.R
+import com.mono.fitness.data.Activity
 import com.mono.fitness.data.ActivityPoint
 import com.mono.fitness.data.ActivityType
+import com.mono.fitness.data.MonoDatabase
+import com.mono.fitness.data.MonoRepository
+import com.mono.fitness.util.Formatters
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -43,6 +49,9 @@ import java.util.concurrent.atomic.AtomicLong
 class TrackingService : LifecycleService() {
 
     private val fused by lazy { LocationServices.getFusedLocationProviderClient(this) }
+    private val repo: MonoRepository by lazy {
+        (application as? MonoApp)?.repository ?: MonoRepository(MonoDatabase.get(this))
+    }
     private var hrClient: HeartRateBleClient? = null
     private var locationsRequested: Boolean = false
 
@@ -60,7 +69,8 @@ class TrackingService : LifecycleService() {
         when (intent?.action) {
             ACTION_START -> {
                 val type = intent.getStringExtra(EXTRA_TYPE) ?: ActivityType.RUN.name
-                startRecording(type)
+                val actId = intent.getLongExtra(EXTRA_ACTIVITY_ID, 0L)
+                startRecording(type, actId)
             }
             ACTION_PAUSE -> pause()
             ACTION_RESUME -> resume()
@@ -79,10 +89,13 @@ class TrackingService : LifecycleService() {
         return START_NOT_STICKY
     }
 
-    private fun startRecording(type: String) {
+    private fun startRecording(type: String, actId: Long = 0L) {
         // Duplicate START (double-tap / accidental redelivery) must not wipe progress.
         val existing = Session.current
         if (existing != null && !existing.finishing) {
+            if (actId > 0 && existing.activityId == 0L) {
+                existing.activityId = actId
+            }
             ensureForeground()
             requestLocations()
             publish()
@@ -91,12 +104,42 @@ class TrackingService : LifecycleService() {
         }
 
         val now = System.currentTimeMillis()
-        Session.current = Session(
+        val session = Session(
             id = nextSessionId.incrementAndGet(),
             activityType = type,
             startedAt = now,
-            lastResumeAt = now
+            lastResumeAt = now,
+            activityId = actId
         )
+        Session.current = session
+
+        // Ensure database record is created immediately upon starting session
+        if (session.activityId == 0L) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    val act = Activity(
+                        id = 0,
+                        type = type,
+                        title = "${ActivityType.fromName(type).label} · ${Formatters.date(now)}",
+                        distanceMeters = 0.0,
+                        durationMillis = 0L,
+                        movingTimeMillis = 0L,
+                        avgSpeedMps = 0.0,
+                        maxSpeedMps = 0.0,
+                        elevationGainMeters = 0.0,
+                        calories = 0,
+                        startTimeMillis = now,
+                        endTimeMillis = now,
+                        isManual = false,
+                        source = "gps"
+                    )
+                    session.activityId = repo.saveActivity(act, emptyList())
+                    publish()
+                } catch (_: Exception) {
+                }
+            }
+        }
+
         ensureChannel()
         ensureForeground()
         requestLocations()
@@ -222,8 +265,8 @@ class TrackingService : LifecycleService() {
             triggerSplitMilestone(currentKm, splitDuration)
         }
 
-        session.path += ActivityPoint(
-            activityId = 0,
+        val pt = ActivityPoint(
+            activityId = session.activityId,
             latitude = loc.latitude,
             longitude = loc.longitude,
             elevationMeters = elev,
@@ -232,8 +275,50 @@ class TrackingService : LifecycleService() {
             accuracyMeters = if (loc.hasAccuracy()) loc.accuracy else null,
             sequence = session.path.size
         )
+        session.path += pt
         publish()
         updateNotification()
+
+        if (session.activityId > 0) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    val now = System.currentTimeMillis()
+                    val moving = if (session.paused) {
+                        session.movingAccumulated
+                    } else {
+                        session.movingAccumulated + (now - session.lastResumeAt)
+                    }
+                    val avg = if (moving > 0) session.distanceMeters / (moving / 1000.0) else 0.0
+                    val cal = MonoRepository.estimateCalories(
+                        ActivityType.fromName(session.activityType),
+                        session.distanceMeters,
+                        moving
+                    )
+                    repo.saveActivity(
+                        Activity(
+                            id = session.activityId,
+                            type = session.activityType,
+                            title = "${ActivityType.fromName(session.activityType).label} · ${Formatters.date(session.startedAt)}",
+                            distanceMeters = session.distanceMeters,
+                            durationMillis = (now - session.startedAt).coerceAtLeast(0L),
+                            movingTimeMillis = moving,
+                            avgSpeedMps = avg,
+                            maxSpeedMps = session.maxSpeed,
+                            elevationGainMeters = session.elevGain,
+                            calories = cal,
+                            avgHeartRate = session.avgHr(),
+                            maxHeartRate = session.maxHr.takeIf { it > 0 },
+                            startTimeMillis = session.startedAt,
+                            endTimeMillis = now,
+                            isManual = false,
+                            source = "gps"
+                        ),
+                        track = null
+                    )
+                } catch (_: Exception) {
+                }
+            }
+        }
     }
 
     private fun triggerSplitMilestone(km: Int, splitDurationMs: Long) {
@@ -328,9 +413,44 @@ class TrackingService : LifecycleService() {
         val end = System.currentTimeMillis()
         val duration = (end - session.startedAt).coerceAtLeast(0L)
         val moving = session.movingAccumulated.coerceAtLeast(1L)
+
+        // Ensure final state is persisted to database immediately
+        val finalPoints = session.path.toList()
+        if (session.activityId > 0) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    val type = ActivityType.fromName(session.activityType)
+                    val cal = MonoRepository.estimateCalories(type, session.distanceMeters, moving)
+                    val avg = if (moving > 0) session.distanceMeters / (moving / 1000.0) else 0.0
+                    repo.saveActivity(
+                        Activity(
+                            id = session.activityId,
+                            type = session.activityType,
+                            title = "${type.label} · ${Formatters.date(session.startedAt)}",
+                            distanceMeters = session.distanceMeters,
+                            durationMillis = duration,
+                            movingTimeMillis = moving,
+                            avgSpeedMps = avg,
+                            maxSpeedMps = session.maxSpeed,
+                            elevationGainMeters = session.elevGain,
+                            calories = cal,
+                            avgHeartRate = session.avgHr(),
+                            maxHeartRate = session.maxHr.takeIf { it > 0 },
+                            startTimeMillis = session.startedAt,
+                            endTimeMillis = end,
+                            isManual = false,
+                            source = "gps"
+                        ),
+                        finalPoints
+                    )
+                } catch (_: Exception) {
+                }
+            }
+        }
+
         val snapshot = TrackingSnapshot(
             type = session.activityType,
-            points = session.path.toList(),
+            points = finalPoints,
             distanceMeters = session.distanceMeters,
             durationMillis = duration,
             movingTimeMillis = moving,
@@ -343,7 +463,8 @@ class TrackingService : LifecycleService() {
             currentHeartRate = session.currentHr,
             avgHeartRate = session.avgHr(),
             maxHeartRate = session.maxHr.takeIf { it > 0 },
-            sessionId = session.id
+            sessionId = session.id,
+            activityId = session.activityId
         )
         // Publish finished once, then clear live session.
         lastFinished.value = snapshot
@@ -377,7 +498,8 @@ class TrackingService : LifecycleService() {
             currentHeartRate = session.currentHr,
             avgHeartRate = session.avgHr(),
             maxHeartRate = session.maxHr.takeIf { it > 0 },
-            sessionId = session.id
+            sessionId = session.id,
+            activityId = session.activityId
         )
     }
 
@@ -460,7 +582,8 @@ class TrackingService : LifecycleService() {
         var maxHr: Int = 0,
         var currentHr: Int? = null,
         var lastSplitKm: Int = 0,
-        var lastSplitTimeMs: Long = startedAt
+        var lastSplitTimeMs: Long = startedAt,
+        var activityId: Long = 0L
     ) {
         private val finishClaimed = AtomicBoolean(false)
         val finishing: Boolean get() = finishClaimed.get()
@@ -482,6 +605,7 @@ class TrackingService : LifecycleService() {
         const val ACTION_RESUME = "com.mono.fitness.tracking.RESUME"
         const val ACTION_STOP = "com.mono.fitness.tracking.STOP"
         const val EXTRA_TYPE = "type"
+        const val EXTRA_ACTIVITY_ID = "activity_id"
 
         private const val CHANNEL_ID = "mono_tracking"
         private const val NOTIF_ID = 42
@@ -512,7 +636,8 @@ data class TrackingSnapshot(
     val avgHeartRate: Int? = null,
     val maxHeartRate: Int? = null,
     /** Monotonic id for this workout; used to dedupe finish saves. */
-    val sessionId: Long = 0L
+    val sessionId: Long = 0L,
+    val activityId: Long = 0L
 )
 
 object TrackingController {
@@ -538,9 +663,10 @@ object TrackingController {
         }
     }
 
-    fun start(context: android.content.Context, type: ActivityType) {
+    fun start(context: android.content.Context, type: ActivityType, activityId: Long = 0L) {
         send(context, TrackingService.ACTION_START) {
             putExtra(TrackingService.EXTRA_TYPE, type.name)
+            putExtra(TrackingService.EXTRA_ACTIVITY_ID, activityId)
         }
     }
 

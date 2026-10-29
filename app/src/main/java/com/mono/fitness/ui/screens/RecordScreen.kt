@@ -33,6 +33,7 @@ import com.mono.fitness.ui.components.TypeChip
 import com.mono.fitness.ui.theme.FrostedPanel
 import com.mono.fitness.ui.theme.MonoScaffoldBackground
 import com.mono.fitness.util.Formatters
+import kotlinx.coroutines.launch
 
 @Composable
 fun RecordScreen(
@@ -40,6 +41,7 @@ fun RecordScreen(
     onSaved: (Long) -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val snapshot by TrackingController.state.collectAsState()
     val running by TrackingController.running.collectAsState()
     val finished by TrackingController.finished.collectAsState()
@@ -61,6 +63,33 @@ fun RecordScreen(
         )
     }
 
+    val startWorkout = {
+        maybePromptBattery(context)
+        scope.launch {
+            val now = System.currentTimeMillis()
+            val id = repo.saveActivity(
+                Activity(
+                    id = 0,
+                    type = selectedType.name,
+                    title = "${selectedType.label} · ${Formatters.date(now)}",
+                    distanceMeters = 0.0,
+                    durationMillis = 0L,
+                    movingTimeMillis = 0L,
+                    avgSpeedMps = 0.0,
+                    maxSpeedMps = 0.0,
+                    elevationGainMeters = 0.0,
+                    calories = 0,
+                    startTimeMillis = now,
+                    endTimeMillis = now,
+                    isManual = false,
+                    source = "gps"
+                ),
+                emptyList()
+            )
+            TrackingController.start(context, selectedType, id)
+        }
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
@@ -71,8 +100,7 @@ fun RecordScreen(
         if (!fine) {
             Toast.makeText(context, "Location permission required to record", Toast.LENGTH_LONG).show()
         } else {
-            maybePromptBattery(context)
-            TrackingController.start(context, selectedType)
+            startWorkout()
         }
     }
 
@@ -85,17 +113,13 @@ fun RecordScreen(
             finishRequested = false
             return@LaunchedEffect
         }
-        if (fin.points.isEmpty() && fin.distanceMeters < 5) {
-            finishRequested = false
-            return@LaunchedEffect
-        }
         val type = ActivityType.fromName(fin.type)
         val cal = MonoRepository.estimateCalories(type, fin.distanceMeters, fin.movingTimeMillis)
         val avg = if (fin.movingTimeMillis > 0)
             fin.distanceMeters / (fin.movingTimeMillis / 1000.0) else 0.0
         val id = repo.saveActivity(
             Activity(
-                id = 0,
+                id = fin.activityId,
                 type = fin.type,
                 title = "${type.label} · ${Formatters.date(fin.startTimeMillis)}",
                 distanceMeters = fin.distanceMeters,
@@ -115,6 +139,7 @@ fun RecordScreen(
             fin.points
         )
         lastSavedSessionId = fin.sessionId
+        finishRequested = false
         onSaved(id)
     }
 
@@ -240,18 +265,23 @@ fun RecordScreen(
                         PillButton(
                             text = "Start Session",
                             onClick = {
-                                val perms = mutableListOf(
-                                    Manifest.permission.ACCESS_FINE_LOCATION,
-                                    Manifest.permission.ACCESS_COARSE_LOCATION
-                                )
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                    perms += Manifest.permission.POST_NOTIFICATIONS
+                                val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                                if (fineGranted) {
+                                    startWorkout()
+                                } else {
+                                    val perms = mutableListOf(
+                                        Manifest.permission.ACCESS_FINE_LOCATION,
+                                        Manifest.permission.ACCESS_COARSE_LOCATION
+                                    )
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        perms += Manifest.permission.POST_NOTIFICATIONS
+                                    }
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                        perms += Manifest.permission.BLUETOOTH_SCAN
+                                        perms += Manifest.permission.BLUETOOTH_CONNECT
+                                    }
+                                    permissionLauncher.launch(perms.toTypedArray())
                                 }
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                    perms += Manifest.permission.BLUETOOTH_SCAN
-                                    perms += Manifest.permission.BLUETOOTH_CONNECT
-                                }
-                                permissionLauncher.launch(perms.toTypedArray())
                             },
                             modifier = Modifier.fillMaxWidth()
                         )

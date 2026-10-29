@@ -25,7 +25,7 @@ android {
         versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
-        buildConfigField("boolean", "SEED_DATA", "true")
+        buildConfigField("boolean", "SEED_DATA", "false")
     }
 
     buildTypes {

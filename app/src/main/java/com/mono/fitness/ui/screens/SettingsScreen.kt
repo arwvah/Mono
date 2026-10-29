@@ -30,7 +30,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.mono.fitness.BuildConfig
 import com.mono.fitness.data.MonoRepository
-import com.mono.fitness.data.SeedData
 import com.mono.fitness.ui.components.PillButton
 import com.mono.fitness.ui.theme.FrostedPanel
 import com.mono.fitness.ui.theme.MonoScaffoldBackground
@@ -53,14 +52,7 @@ fun SettingsScreen(
             onDismissRequest = { confirmClear = false },
             title = { Text("Clear all data?") },
             text = {
-                Text(
-                    "Deletes every activity, route, track point, and personal record. " +
-                        if (BuildConfig.SEED_DATA) {
-                            "Seed data will be re-inserted if the database is empty after clear."
-                        } else {
-                            "This cannot be undone."
-                        }
-                )
+                Text("Deletes every activity, route, track point, and personal record. This cannot be undone.")
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -68,9 +60,6 @@ fun SettingsScreen(
                     scope.launch {
                         withContext(Dispatchers.IO) {
                             repo.clearAllData()
-                            if (BuildConfig.SEED_DATA) {
-                                SeedData.seedIfEmpty(repo)
-                            }
                         }
                         Toast.makeText(context, "Database cleared", Toast.LENGTH_SHORT).show()
                     }
