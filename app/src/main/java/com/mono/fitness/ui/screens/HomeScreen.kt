@@ -25,6 +25,7 @@ import com.mono.fitness.data.MonoRepository
 import com.mono.fitness.ui.components.ActivityListCard
 import com.mono.fitness.ui.components.PillButton
 import com.mono.fitness.ui.components.TypeChip
+import com.mono.fitness.ui.components.WeeklyGoalCard
 import com.mono.fitness.ui.theme.MonoScaffoldBackground
 import com.mono.fitness.util.Formatters
 import com.mono.fitness.util.Gpx
@@ -151,6 +152,9 @@ fun HomeScreen(
                         )
                     }
                 }
+            }
+            item {
+                WeeklyGoalCard(currentKm = weekDist / 1000.0, goalKm = 30.0)
             }
             item {
                 Row(

@@ -15,6 +15,7 @@ import com.mono.fitness.data.RecordKeys
 import com.mono.fitness.ui.components.PremiumStubBanner
 import com.mono.fitness.ui.components.SimpleBarChart
 import com.mono.fitness.ui.components.StatBubble
+import com.mono.fitness.ui.components.WeeklyGoalCard
 import com.mono.fitness.ui.theme.FrostedPanel
 import com.mono.fitness.ui.theme.MonoScaffoldBackground
 import com.mono.fitness.util.Formatters
@@ -98,6 +99,10 @@ fun StatsScreen(repo: MonoRepository) {
                     StatBubble("Distance", Formatters.distanceKm(weekDist), Modifier.weight(1f))
                     StatBubble("Time", Formatters.duration(weekTime), Modifier.weight(1f))
                 }
+            }
+            
+            item {
+                WeeklyGoalCard(currentKm = weekDist / 1000.0, goalKm = 30.0)
             }
             
             item {

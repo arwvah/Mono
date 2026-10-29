@@ -10,7 +10,12 @@ Log activities, record live GPS sessions, plan routes, and review training stats
 ## What it does
 
 - Activity feed with manual entry, edit, and delete
-- Live GPS tracking with foreground service
+- Live GPS tracking with foreground service and 1km milestone split haptics
+- Kilometer splits breakdown with comparative relative pace bars and fastest split badges
+- Estimated Best Efforts detection (fastest 400m, 1k, 1 mile, 5k, 10k segments)
+- 5 Heart Rate Training Zones (Z1-Z5: Warm Up, Aerobic, Tempo, Threshold, Anaerobic)
+- Interactive Workout Profile chart with instant toggle between Elevation and Pace / Speed curves
+- Strava-style Weekly Goal progress tracker
 - Post-activity map view and elevation profile
 - GPX import and export (for both activities and planned routes)
 - Shareable PNG route cards with true-aspect silhouette

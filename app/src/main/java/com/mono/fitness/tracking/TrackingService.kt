@@ -4,11 +4,15 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.location.Location
 import android.os.Build
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
@@ -25,6 +29,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -208,6 +213,15 @@ class TrackingService : LifecycleService() {
             session.maxSpeed = maxOf(session.maxSpeed, loc.speed.toDouble())
         }
         session.lastLocation = loc
+        val currentKm = (session.distanceMeters / 1000.0).toInt()
+        if (currentKm > session.lastSplitKm && currentKm > 0) {
+            val now = System.currentTimeMillis()
+            val splitDuration = now - session.lastSplitTimeMs
+            session.lastSplitKm = currentKm
+            session.lastSplitTimeMs = now
+            triggerSplitMilestone(currentKm, splitDuration)
+        }
+
         session.path += ActivityPoint(
             activityId = 0,
             latitude = loc.latitude,
@@ -220,6 +234,25 @@ class TrackingService : LifecycleService() {
         )
         publish()
         updateNotification()
+    }
+
+    private fun triggerSplitMilestone(km: Int, splitDurationMs: Long) {
+        try {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vm?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 150, 100, 250), -1))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(longArrayOf(0, 150, 100, 250), -1)
+            }
+        } catch (_: Exception) {
+        }
     }
 
     /**
@@ -382,7 +415,9 @@ class TrackingService : LifecycleService() {
         val text = when {
             session == null -> "Recording…"
             session.paused -> "Paused"
-            else -> String.format("%.2f km · recording", session.distanceMeters / 1000.0)
+            session.lastSplitKm > 0 && (System.currentTimeMillis() - session.lastSplitTimeMs) < 15_000L ->
+                "KM ${session.lastSplitKm} completed! · ${String.format(Locale.US, "%.2f km", session.distanceMeters / 1000.0)}"
+            else -> String.format(Locale.US, "%.2f km · recording", session.distanceMeters / 1000.0)
         }
         val mgr = getSystemService(NotificationManager::class.java)
         mgr.notify(NOTIF_ID, buildNotification(text))
@@ -423,7 +458,9 @@ class TrackingService : LifecycleService() {
         var hrSum: Long = 0L,
         var hrCount: Int = 0,
         var maxHr: Int = 0,
-        var currentHr: Int? = null
+        var currentHr: Int? = null,
+        var lastSplitKm: Int = 0,
+        var lastSplitTimeMs: Long = startedAt
     ) {
         private val finishClaimed = AtomicBoolean(false)
         val finishing: Boolean get() = finishClaimed.get()

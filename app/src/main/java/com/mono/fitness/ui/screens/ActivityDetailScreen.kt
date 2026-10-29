@@ -21,15 +21,20 @@ import androidx.compose.ui.unit.dp
 import com.google.android.gms.maps.model.LatLng
 import com.mono.fitness.data.ActivityType
 import com.mono.fitness.data.MonoRepository
+import com.mono.fitness.ui.components.BestEffortsCard
 import com.mono.fitness.ui.components.ElevationProfileChart
+import com.mono.fitness.ui.components.HrZonesCard
 import com.mono.fitness.ui.components.PillButton
 import com.mono.fitness.ui.components.RouteMap
+import com.mono.fitness.ui.components.SplitsCard
 import com.mono.fitness.ui.components.StatBubble
+import com.mono.fitness.ui.components.WorkoutProfileChart
 import com.mono.fitness.ui.theme.FrostedPanel
 import com.mono.fitness.ui.theme.MonoScaffoldBackground
 import com.mono.fitness.util.Formatters
 import com.mono.fitness.util.Gpx
 import com.mono.fitness.util.ShareCardExporter
+import com.mono.fitness.util.SplitsCalculator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -51,7 +56,16 @@ fun ActivityDetailScreen(
     var confirmDelete by remember { mutableStateOf(false) }
 
     val activityType = ActivityType.fromName(act.type)
+    val isCycling = activityType == ActivityType.RIDE
     val latLngs = points.map { LatLng(it.latitude, it.longitude) }
+
+    val splits = remember(points) { SplitsCalculator.calculateSplits(points) }
+    val bestEfforts = remember(points) { SplitsCalculator.calculateBestEfforts(points) }
+    val hrZones = remember(act.avgHeartRate, act.maxHeartRate, act.durationMillis) {
+        if (act.avgHeartRate != null || act.maxHeartRate != null) {
+            SplitsCalculator.calculateHrZones(act.durationMillis, act.avgHeartRate, act.maxHeartRate)
+        } else emptyList()
+    }
 
     if (confirmDelete) {
         AlertDialog(
@@ -210,8 +224,20 @@ fun ActivityDetailScreen(
                     StatBubble("Avg HR", Formatters.heartRate(act.avgHeartRate), Modifier.weight(1f))
                 }
 
-                if (points.any { it.elevationMeters != null }) {
-                    ElevationProfileChart(points)
+                if (points.isNotEmpty()) {
+                    WorkoutProfileChart(points, isCycling = isCycling)
+                }
+
+                if (splits.isNotEmpty()) {
+                    SplitsCard(splits)
+                }
+
+                if (bestEfforts.isNotEmpty()) {
+                    BestEffortsCard(bestEfforts)
+                }
+
+                if (hrZones.isNotEmpty()) {
+                    HrZonesCard(hrZones)
                 }
 
                 if (act.notes.isNotBlank()) {
