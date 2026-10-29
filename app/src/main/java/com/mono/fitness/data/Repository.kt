@@ -91,6 +91,15 @@ class MonoRepository(
 
     suspend fun deleteActivity(id: Long) {
         activities.deleteById(id)
+        recalculatePersonalRecords()
+    }
+
+    suspend fun recalculatePersonalRecords() {
+        records.clear()
+        val all = activities.getAll()
+        for (a in all) {
+            updatePersonalRecords(a)
+        }
     }
 
     fun observeRoutes(

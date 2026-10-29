@@ -1,12 +1,15 @@
 package com.mono.fitness.util
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.mono.fitness.data.Activity
 import com.mono.fitness.data.ActivityPoint
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
+import org.junit.runner.RunWith
 
-class ShareCardExporterTest {
+@RunWith(AndroidJUnit4::class)
+class ShareCardExporterInstrumentedTest {
 
     @Test
     fun render_withPoints_returnsBitmap() {

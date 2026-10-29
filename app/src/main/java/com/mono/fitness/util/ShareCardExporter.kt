@@ -67,20 +67,24 @@ object ShareCardExporter {
             val maxLat = lats.max()
             val minLng = lngs.min()
             val maxLng = lngs.max()
-            val latSpan = (maxLat - minLat).coerceAtLeast(1e-6).toFloat()
-            val lngSpan = (maxLng - minLng).coerceAtLeast(1e-6).toFloat()
+            val latSpan = (maxLat - minLat).coerceAtLeast(1e-6)
+            val lngSpan = (maxLng - minLng).coerceAtLeast(1e-6)
+            val midLat = (minLat + maxLat) / 2.0
+            val cosLat = Math.cos(Math.toRadians(midLat)).coerceAtLeast(0.01)
+            val effectiveLngSpan = lngSpan * cosLat
+
             val usableW = width - 2 * pad
             val usableH = mapBottom - pad * 2
-            val scale = minOf(usableW / lngSpan, usableH / latSpan) * 0.9f
-            val pathW = lngSpan * scale
-            val pathH = latSpan * scale
+            val scale = minOf(usableW / effectiveLngSpan, usableH / latSpan) * 0.9
+            val pathW = (effectiveLngSpan * scale).toFloat()
+            val pathH = (latSpan * scale).toFloat()
             val ox = (width - pathW) / 2f
             val oy = pad + (usableH - pathH) / 2f
 
             fun mapX(lng: Double): Float =
-                ox + ((lng - minLng).toFloat() / lngSpan * pathW)
+                (ox + ((lng - minLng) * cosLat / effectiveLngSpan * pathW)).toFloat()
             fun mapY(lat: Double): Float =
-                oy + ((maxLat - lat).toFloat() / latSpan * pathH)
+                (oy + ((maxLat - lat) / latSpan * pathH)).toFloat()
 
             val path = Path()
             points.forEachIndexed { i, p ->
@@ -140,9 +144,21 @@ object ShareCardExporter {
         canvas.drawText(Formatters.date(activity.startTimeMillis), pad, y, labelPaint)
 
         y += width * 0.08f
+        val isCycling = activity.type.equals("RIDE", ignoreCase = true)
+        val rateLabel = if (isCycling) "Avg Speed" else "Pace"
+        val rateValue = if (isCycling) {
+            val speedMps = if (activity.avgSpeedMps > 0) {
+                activity.avgSpeedMps
+            } else if (activity.durationMillis > 0) {
+                activity.distanceMeters / (activity.durationMillis / 1000.0)
+            } else 0.0
+            Formatters.speedKmh(speedMps)
+        } else {
+            Formatters.paceFromActivity(activity.distanceMeters, activity.movingTimeMillis)
+        }
         val cols = listOf(
             "Distance" to Formatters.distanceKm(activity.distanceMeters),
-            "Pace" to Formatters.paceFromActivity(activity.distanceMeters, activity.movingTimeMillis),
+            rateLabel to rateValue,
             "Time" to Formatters.duration(activity.durationMillis),
             "Elev" to Formatters.elevation(activity.elevationGainMeters)
         )

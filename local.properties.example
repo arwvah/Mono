@@ -1,6 +1,9 @@
 ## Copy this file to local.properties (gitignored) and fill in values.
 ## Android Studio usually writes sdk.dir automatically.
 
+# Linux / macOS:
+# sdk.dir=/home/username/Android/Sdk
+# Windows:
 sdk.dir=C\:\\Users\\YOUR_USER\\AppData\\Local\\Android\\Sdk
 
 ## Google Maps SDK key (Maps SDK for Android enabled in Google Cloud Console)

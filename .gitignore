@@ -12,3 +12,5 @@ app/build
 *.ap_
 *.aab
 *.keystore
+*.bak
+.kotlin/

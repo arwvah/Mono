@@ -2,20 +2,19 @@ package com.mono.fitness.util
 
 import com.mono.fitness.data.Activity
 import com.mono.fitness.data.ActivityPoint
-import org.xmlpull.v1.XmlPullParser
-import org.xmlpull.v1.XmlPullParserFactory
+import org.w3c.dom.Element
+import org.w3c.dom.Node
 import java.io.InputStream
 import java.io.OutputStream
 import java.io.OutputStreamWriter
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.format.DateTimeFormatter
 import java.util.Locale
-import java.util.TimeZone
+import javax.xml.parsers.DocumentBuilderFactory
 
 object Gpx {
-    private val iso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
-        timeZone = TimeZone.getTimeZone("UTC")
-    }
+    private val isoFormatter = DateTimeFormatter.ISO_INSTANT
 
     fun export(
         activity: Activity,
@@ -66,8 +65,11 @@ object Gpx {
         w.append("    <trkseg>\n")
         for ((i, p) in points.withIndex()) {
             w.append("      <trkpt lat=\"${p.first}\" lon=\"${p.second}\">")
-            p.third?.let { w.append("<ele>$it</ele>") }
-            times?.getOrNull(i)?.let { w.append("<time>${iso.format(Date(it))}</time>") }
+            p.third?.let { w.append("<ele>${String.format(Locale.US, "%.1f", it)}</ele>") }
+            times?.getOrNull(i)?.let {
+                val formattedTime = isoFormatter.format(Instant.ofEpochMilli(it))
+                w.append("<time>$formattedTime</time>")
+            }
             w.append("</trkpt>\n")
         }
         w.append("    </trkseg>\n  </trk>\n</gpx>\n")
@@ -81,68 +83,66 @@ object Gpx {
     )
 
     fun import(input: InputStream): ImportedTrack {
-        val factory = XmlPullParserFactory.newInstance()
-        val parser = factory.newPullParser()
-        parser.setInput(input, "UTF-8")
+        val factory = DocumentBuilderFactory.newInstance()
+        factory.isNamespaceAware = false
+        val builder = factory.newDocumentBuilder()
+        val doc = builder.parse(input)
+
+        val nameNode = doc.getElementsByTagName("name").item(0)
+        val name = nameNode?.textContent?.trim().takeUnless { it.isNullOrEmpty() } ?: "Imported"
+
+        val typeNode = doc.getElementsByTagName("type").item(0)
+        val type = typeNode?.textContent?.trim().takeUnless { it.isNullOrEmpty() }
+
         val points = mutableListOf<ActivityPoint>()
-        var name = "Imported"
-        var type: String? = null
-        var lat = 0.0
-        var lon = 0.0
-        var ele: Double? = null
-        var time = System.currentTimeMillis()
-        var inName = false
-        var inType = false
-        var inEle = false
-        var inTime = false
-        var event = parser.eventType
-        while (event != XmlPullParser.END_DOCUMENT) {
-            when (event) {
-                XmlPullParser.START_TAG -> when (parser.name.lowercase(Locale.US)) {
-                    "trkpt", "wpt" -> {
-                        lat = parser.getAttributeValue(null, "lat")?.toDoubleOrNull() ?: 0.0
-                        lon = parser.getAttributeValue(null, "lon")?.toDoubleOrNull() ?: 0.0
-                        ele = null
-                    }
-                    "name" -> inName = true
-                    "type" -> inType = true
-                    "ele" -> inEle = true
-                    "time" -> inTime = true
-                }
-                XmlPullParser.TEXT -> {
-                    val t = parser.text?.trim().orEmpty()
-                    if (t.isEmpty()) {
-                        // skip
-                    } else if (inName) name = t
-                    else if (inType) type = t
-                    else if (inEle) ele = t.toDoubleOrNull()
-                    else if (inTime) {
-                        try {
-                            time = iso.parse(t)?.time ?: time
-                        } catch (_: Exception) {
+        val trkpts = doc.getElementsByTagName("trkpt")
+        val targetNodes = if (trkpts.length > 0) trkpts else doc.getElementsByTagName("wpt")
+
+        for (i in 0 until targetNodes.length) {
+            val el = targetNodes.item(i) as? Element ?: continue
+            val lat = el.getAttribute("lat").toDoubleOrNull() ?: continue
+            val lon = el.getAttribute("lon").toDoubleOrNull() ?: continue
+            var ele: Double? = null
+            var pointTime = System.currentTimeMillis()
+
+            val children = el.childNodes
+            for (j in 0 until children.length) {
+                val child = children.item(j)
+                if (child.nodeType == Node.ELEMENT_NODE) {
+                    when (child.nodeName.lowercase(Locale.US)) {
+                        "ele" -> ele = child.textContent?.trim()?.toDoubleOrNull()
+                        "time" -> child.textContent?.trim()?.let {
+                            parseTimestamp(it)?.let { pt -> pointTime = pt }
                         }
                     }
                 }
-                XmlPullParser.END_TAG -> when (parser.name.lowercase(Locale.US)) {
-                    "trkpt", "wpt" -> {
-                        points += ActivityPoint(
-                            activityId = 0,
-                            latitude = lat,
-                            longitude = lon,
-                            elevationMeters = ele,
-                            timestampMillis = time,
-                            sequence = points.size
-                        )
-                    }
-                    "name" -> inName = false
-                    "type" -> inType = false
-                    "ele" -> inEle = false
-                    "time" -> inTime = false
-                }
             }
-            event = parser.next()
+
+            points += ActivityPoint(
+                activityId = 0,
+                latitude = lat,
+                longitude = lon,
+                elevationMeters = ele,
+                timestampMillis = pointTime,
+                sequence = points.size
+            )
         }
+
         return ImportedTrack(name, type, points)
+    }
+
+    fun parseTimestamp(s: String): Long? {
+        val trimmed = s.trim()
+        if (trimmed.isEmpty()) return null
+        return try {
+            OffsetDateTime.parse(trimmed).toInstant().toEpochMilli()
+        } catch (_: Exception) {
+            try {
+                Instant.parse(trimmed).toEpochMilli()
+            } catch (_: Exception) {
+                null
+            }
+        }
     }
 
     private fun escape(s: String): String =

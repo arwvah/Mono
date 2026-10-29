@@ -13,6 +13,9 @@ interface ActivityDao {
     @Query("SELECT * FROM activities ORDER BY startTimeMillis DESC")
     fun observeAll(): Flow<List<Activity>>
 
+    @Query("SELECT * FROM activities ORDER BY startTimeMillis DESC")
+    suspend fun getAll(): List<Activity>
+
     @Query("SELECT * FROM activities WHERE id = :id")
     fun observeById(id: Long): Flow<Activity?>
 

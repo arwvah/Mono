@@ -180,19 +180,31 @@ class TrackingService : LifecycleService() {
     }
 
     private fun onLocation(session: Session, loc: Location) {
+        // Discard poor accuracy fixes (> 35m) to avoid erratic GPS jumps indoors / in tunnels
+        if (loc.hasAccuracy() && loc.accuracy > 35f) {
+            return
+        }
+
         val elev = if (loc.hasAltitude()) loc.altitude else null
         session.lastLocation?.let { prev ->
             val d = prev.distanceTo(loc).toDouble()
-            if (d < 100) session.distanceMeters += d // filter GPS jumps
+            val timeDeltaS = if (loc.time > prev.time) (loc.time - prev.time) / 1000.0 else 1.0
+            val impliedSpeed = d / timeDeltaS.coerceAtLeast(0.5)
+
+            // Filter stationary GPS jitter (< 1.5m) and impossible jumps (> 45 m/s or 162 km/h)
+            if (d >= 1.5 && impliedSpeed < 45.0) {
+                session.distanceMeters += d
+            }
         }
         elev?.let { e ->
             session.lastElev?.let { prev ->
                 val g = e - prev
-                if (g > 0 && g < 30) session.elevGain += g
+                // Require >= 1.0m to filter vertical sensor noise, max 35m per sample
+                if (g >= 1.0 && g < 35.0) session.elevGain += g
             }
             session.lastElev = e
         }
-        if (loc.hasSpeed()) {
+        if (loc.hasSpeed() && loc.speed > 0f) {
             session.maxSpeed = maxOf(session.maxSpeed, loc.speed.toDouble())
         }
         session.lastLocation = loc

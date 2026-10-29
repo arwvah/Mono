@@ -8,6 +8,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -27,10 +28,12 @@ import com.mono.fitness.ui.components.StatBubble
 import com.mono.fitness.ui.theme.FrostedPanel
 import com.mono.fitness.ui.theme.MonoScaffoldBackground
 import com.mono.fitness.util.Formatters
+import com.mono.fitness.util.Gpx
 import com.mono.fitness.util.ShareCardExporter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -96,7 +99,45 @@ fun ActivityDetailScreen(
                             ShareCardExporter.share(context, bmp, "mono_${act.id}.png")
                         }
                     }) {
-                        Icon(Icons.Outlined.IosShare, "Share")
+                        Icon(Icons.Outlined.IosShare, "Share Card")
+                    }
+                    if (points.isNotEmpty()) {
+                        IconButton(onClick = {
+                            scope.launch {
+                                try {
+                                    withContext(Dispatchers.IO) {
+                                        val dir = File(context.cacheDir, "gpx").also { it.mkdirs() }
+                                        val f = File(dir, "activity_${act.id}.gpx")
+                                        f.outputStream().use { out ->
+                                            Gpx.export(act, points, out)
+                                        }
+                                        val uri = androidx.core.content.FileProvider.getUriForFile(
+                                            context,
+                                            context.packageName + ".fileprovider",
+                                            f
+                                        )
+                                        val intent = android.content.Intent(
+                                            android.content.Intent.ACTION_SEND
+                                        ).apply {
+                                            type = "application/gpx+xml"
+                                            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        context.startActivity(
+                                            android.content.Intent.createChooser(intent, "Export activity GPX")
+                                        )
+                                    }
+                                } catch (e: Exception) {
+                                    Toast.makeText(
+                                        context,
+                                        "Export failed: ${e.message}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            }
+                        }) {
+                            Icon(Icons.Outlined.FileUpload, "Export GPX")
+                        }
                     }
                     IconButton(onClick = onEdit) {
                         Icon(Icons.Outlined.Edit, "Edit")

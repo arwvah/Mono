@@ -12,10 +12,11 @@ Log activities, record live GPS sessions, plan routes, and review training stats
 - Activity feed with manual entry, edit, and delete
 - Live GPS tracking with foreground service
 - Post-activity map view and elevation profile
-- GPX import and export
-- Shareable PNG route cards
-- Route planning with type and distance filters
-- Weekly / monthly stats and personal records
+- GPX import and export (for both activities and planned routes)
+- Shareable PNG route cards with true-aspect silhouette
+- Route planning with tap-to-add waypoints, elevation lookup, and distance filters
+- Weekly / monthly stats and auto-calculated personal records
+- Built-in seed data with realistic GPS routes and elevation profiles for immediate testing
 - Optional BLE heart-rate strap support during recording
 
 No account, no backend, no cloud sync. The app opens straight to the feed.
@@ -43,12 +44,12 @@ No account, no backend, no cloud sync. The app opens straight to the feed.
 
 ## Get started
 
-1. Open `C:\Users\MSI\OneDrive\Desktop\Interest\Mono` in Android Studio.
+1. Open the project in Android Studio (Koala+ recommended).
 2. Copy `local.properties.example` to `local.properties` and fill in your paths.
 3. Set your Google Maps API key in `local.properties`:
 
 ```properties
-sdk.dir=C:\\Users\\YOUR_USER\\AppData\\Local\\Android\\Sdk
+sdk.dir=/path/to/your/android/sdk
 MAPS_API_KEY=AIza...your_real_key...
 ```
 

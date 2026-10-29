@@ -4,6 +4,7 @@ import com.mono.fitness.data.Activity
 import com.mono.fitness.data.ActivityPoint
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -53,6 +54,35 @@ class GpxRoundTripTest {
         val imported = Gpx.import(ByteArrayInputStream(xml))
         assertEquals("X", imported.name)
         assertTrue(imported.points.isEmpty())
+    }
+
+    @Test
+    fun import_gpxWithMillisAndOffsets_parsesCorrectly() {
+        val xml = """<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Strava" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>Strava Ride</name>
+    <type>RIDE</type>
+    <trkseg>
+      <trkpt lat="37.7749" lon="-122.4194">
+        <ele>15.5</ele>
+        <time>2026-10-29T10:15:30.500Z</time>
+      </trkpt>
+      <trkpt lat="37.7755" lon="-122.4180">
+        <ele>18.2</ele>
+        <time>2026-10-29T15:15:35+05:00</time>
+      </trkpt>
+    </trkseg>
+  </trk>
+</gpx>""".trimIndent().toByteArray()
+        val imported = Gpx.import(ByteArrayInputStream(xml))
+        assertEquals("Strava Ride", imported.name)
+        assertEquals("RIDE", imported.type)
+        assertEquals(2, imported.points.size)
+        assertEquals(37.7749, imported.points[0].latitude, 1e-4)
+        assertEquals(-122.4194, imported.points[0].longitude, 1e-4)
+        assertEquals(15.5, imported.points[0].elevationMeters!!, 0.1)
+        assertNotNull(imported.points[0].timestampMillis)
     }
 
     @Test
