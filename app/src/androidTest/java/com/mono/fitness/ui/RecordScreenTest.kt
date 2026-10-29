@@ -42,11 +42,11 @@ class RecordScreenTest {
         val repo = MonoRepository(db)
         composeRule.setContent {
             MonoTheme {
-                RecordScreen(repo = repo, onSaved = {})
+                RecordScreen(onSaved = {})
             }
         }
-        composeRule.onNodeWithText("Ready to record").assertIsDisplayed()
-        composeRule.onNodeWithText("Start").assertIsDisplayed()
-        composeRule.onNodeWithText("Activity type").assertIsDisplayed()
+        composeRule.onNodeWithText("READY").assertIsDisplayed()
+        composeRule.onNodeWithText("Start Session").assertIsDisplayed()
+        composeRule.onNodeWithText("ACTIVITY TYPE").assertIsDisplayed()
     }
 }

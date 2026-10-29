@@ -16,16 +16,21 @@ object ElevationApi {
     private const val TIMEOUT_MS = 12_000
 
     suspend fun fetchElevations(points: List<Pair<Double, Double>>): List<Double?> =
-        withContext(Dispatchers.IO) {
+        fetchElevations(points, ::fetchBatch)
+
+    internal suspend fun fetchElevations(
+        points: List<Pair<Double, Double>>,
+        fetch: (List<Pair<Double, Double>>) -> List<Double?>
+    ): List<Double?> = withContext(Dispatchers.IO) {
             if (points.isEmpty()) return@withContext emptyList()
             val result = MutableList<Double?>(points.size) { null }
             var i = 0
             while (i < points.size) {
                 val end = minOf(i + BATCH, points.size)
                 val slice = points.subList(i, end)
-                val elevs = fetchBatch(slice)
-                for (j in elevs.indices) {
-                    result[i + j] = elevs[j]
+                val elevs = fetch(slice)
+                for (j in 0 until slice.size) {
+                    result[i + j] = elevs.getOrNull(j)
                 }
                 i = end
             }

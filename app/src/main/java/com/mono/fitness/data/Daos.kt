@@ -135,4 +135,7 @@ interface PersonalRecordDao {
 
     @Query("DELETE FROM personal_records")
     suspend fun clear()
+
+    @Query("DELETE FROM personal_records WHERE activityType = :type")
+    suspend fun clearForType(type: String)
 }

@@ -6,9 +6,17 @@ on:
   pull_request:
     branches: [master, main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -16,22 +24,54 @@ jobs:
           distribution: temurin
           java-version: 17
           cache: gradle
-      - name: Make gradlew executable
-        run: chmod +x gradlew
-      - name: Decode local.properties
-        run: |
-          if [ -n "${{ secrets.MAPS_API_KEY }}" ]; then
-            echo "sdk.dir=$ANDROID_HOME" > local.properties
-            echo "MAPS_API_KEY=${{ secrets.MAPS_API_KEY }}" >> local.properties
-          else
-            echo "sdk.dir=$ANDROID_HOME" > local.properties
-          fi
-      - name: Assemble debug
-        run: ./gradlew assembleDebug
-      - name: Unit tests
-        run: ./gradlew testDebugUnitTest
+      - name: Configure Android SDK and Maps key
+        env:
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
+        run: printf 'sdk.dir=%s\nMAPS_API_KEY=%s\n' "$ANDROID_HOME" "$MAPS_API_KEY" > local.properties
+      - name: Build, unit tests, and lint
+        run: ./gradlew assembleDebug testDebugUnitTest lintDebug --console=plain
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mono-quality-reports
+          path: |
+            app/build/reports/
+            app/build/test-results/
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: mono-debug-apk
           path: app/build/outputs/apk/debug/*.apk
+
+  instrumented-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run database, GPX, recording, and Compose tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: ./gradlew connectedDebugAndroidTest --console=plain
+      - name: Upload instrumented reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mono-instrumented-reports
+          path: |
+            app/build/reports/androidTests/
+            app/build/outputs/androidTest-results/

@@ -1,6 +1,9 @@
 package com.mono.fitness.data
 
+import androidx.room.withTransaction
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
@@ -32,10 +35,12 @@ class MonoRepository(
     suspend fun saveActivity(
         activity: Activity,
         track: List<ActivityPoint>? = null
-    ): Long {
+    ): Long = db.withTransaction {
+        val previous = activity.id.takeIf { it != 0L }?.let { activities.getById(it) }
         val id = if (activity.id == 0L) {
             activities.insert(activity)
         } else {
+            requireNotNull(previous) { "Activity no longer exists" }
             activities.update(activity)
             activity.id
         }
@@ -47,9 +52,30 @@ class MonoRepository(
                 })
             }
         }
-        activities.getById(id)?.let { updatePersonalRecords(it) }
-        return id
+        // An edit can lower a record or move its owner to another sport.
+        // Rebuild both affected types so stale bests cannot survive the edit.
+        if (previous != null) {
+            rebuildRecordsForType(previous.type)
+            if (previous.type != activity.type) rebuildRecordsForType(activity.type)
+        } else {
+            updatePersonalRecords(activity.copy(id = id))
+        }
+        id
     }
+
+    /** Persist a recording checkpoint and only its new points in one transaction. */
+    suspend fun saveRecordingProgress(activity: Activity, newPoints: List<ActivityPoint>): Long =
+        db.withTransaction {
+            val previous = activity.id.takeIf { it != 0L }?.let { activities.getById(it) }
+            val id = if (activity.id == 0L) activities.insert(activity) else {
+                requireNotNull(previous) { "Activity no longer exists" }
+                // Preserve title/notes edits made from the feed while recording.
+                activities.update(activity.copy(title = previous.title, notes = previous.notes))
+                activity.id
+            }
+            points.insertAll(newPoints.map { it.copy(id = 0, activityId = id) })
+            id
+        }
 
     /**
      * Import a parsed GPX track as a new activity (distance/elev/duration from points).
@@ -89,17 +115,23 @@ class MonoRepository(
         )
     }
 
-    suspend fun deleteActivity(id: Long) {
+    suspend fun deleteActivity(id: Long) = db.withTransaction {
+        val type = activities.getById(id)?.type
         activities.deleteById(id)
-        recalculatePersonalRecords()
+        if (type != null) rebuildRecordsForType(type)
     }
 
-    suspend fun recalculatePersonalRecords() {
+    suspend fun recalculatePersonalRecords() = db.withTransaction {
         records.clear()
         val all = activities.getAll()
         for (a in all) {
             updatePersonalRecords(a)
         }
+    }
+
+    private suspend fun rebuildRecordsForType(type: String) {
+        records.clearForType(type)
+        activities.getAll().filter { it.type == type }.forEach { updatePersonalRecords(it) }
     }
 
     fun observeRoutes(
@@ -112,8 +144,9 @@ class MonoRepository(
     fun observeRoutePoints(routeId: Long) = routePoints.observeForRoute(routeId)
     suspend fun getRoutePoints(routeId: Long) = routePoints.getForRoute(routeId)
 
-    suspend fun saveRoute(route: Route, track: List<RoutePoint>): Long {
+    suspend fun saveRoute(route: Route, track: List<RoutePoint>): Long = db.withTransaction {
         val id = if (route.id == 0L) routes.insert(route) else {
+            requireNotNull(routes.getById(route.id)) { "Route no longer exists" }
             routes.update(route)
             routePoints.deleteForRoute(route.id)
             route.id
@@ -121,7 +154,7 @@ class MonoRepository(
         routePoints.insertAll(track.mapIndexed { i, p ->
             p.copy(id = 0, routeId = id, sequence = i)
         })
-        return id
+        id
     }
 
     suspend fun deleteRoute(id: Long) = routes.deleteById(id)
@@ -201,8 +234,8 @@ class MonoRepository(
         records.clear()
     }
 
-    /** Wipes all Room tables (activities, routes, PRs, points). Useful to re-seed without uninstall. */
-    suspend fun clearAllData() {
+    /** Wipes all Room tables without blocking the caller's main thread. */
+    suspend fun clearAllData() = withContext(Dispatchers.IO) {
         db.clearAllTables()
     }
 
@@ -217,7 +250,8 @@ class MonoRepository(
             val a = sin(dLat / 2) * sin(dLat / 2) +
                 cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
                 sin(dLon / 2) * sin(dLon / 2)
-            val c = 2 * atan2(sqrt(a), sqrt(1 - a))
+            val bounded = a.coerceIn(0.0, 1.0)
+            val c = 2 * atan2(sqrt(bounded), sqrt(1 - bounded))
             return r * c
         }
 

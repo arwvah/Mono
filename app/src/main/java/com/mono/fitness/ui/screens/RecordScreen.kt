@@ -22,9 +22,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.google.android.gms.maps.model.LatLng
-import com.mono.fitness.data.Activity
 import com.mono.fitness.data.ActivityType
-import com.mono.fitness.data.MonoRepository
 import com.mono.fitness.tracking.TrackingController
 import com.mono.fitness.ui.components.PillButton
 import com.mono.fitness.ui.components.RouteMap
@@ -33,27 +31,25 @@ import com.mono.fitness.ui.components.TypeChip
 import com.mono.fitness.ui.theme.FrostedPanel
 import com.mono.fitness.ui.theme.MonoScaffoldBackground
 import com.mono.fitness.util.Formatters
-import kotlinx.coroutines.launch
 
 @Composable
 fun RecordScreen(
-    repo: MonoRepository,
     onSaved: (Long) -> Unit
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val snapshot by TrackingController.state.collectAsState()
     val running by TrackingController.running.collectAsState()
     val finished by TrackingController.finished.collectAsState()
     var selectedType by remember { mutableStateOf(ActivityType.RUN) }
     var finishRequested by remember { mutableStateOf(false) }
-    var lastSavedSessionId by remember { mutableLongStateOf(-1L) }
+    var startRequested by remember { mutableStateOf(false) }
+    val saveError by TrackingController.saveError.collectAsState()
 
     // Reset local finish lock when a new session starts.
     LaunchedEffect(running) {
         if (running) {
             finishRequested = false
-            lastSavedSessionId = -1L
+            startRequested = false
         }
     }
     var hasLocationPermission by remember {
@@ -63,30 +59,20 @@ fun RecordScreen(
         )
     }
 
+    LaunchedEffect(saveError) {
+        if (saveError != null) finishRequested = false
+    }
+
     val startWorkout = {
-        maybePromptBattery(context)
-        scope.launch {
-            val now = System.currentTimeMillis()
-            val id = repo.saveActivity(
-                Activity(
-                    id = 0,
-                    type = selectedType.name,
-                    title = "${selectedType.label} · ${Formatters.date(now)}",
-                    distanceMeters = 0.0,
-                    durationMillis = 0L,
-                    movingTimeMillis = 0L,
-                    avgSpeedMps = 0.0,
-                    maxSpeedMps = 0.0,
-                    elevationGainMeters = 0.0,
-                    calories = 0,
-                    startTimeMillis = now,
-                    endTimeMillis = now,
-                    isManual = false,
-                    source = "gps"
-                ),
-                emptyList()
-            )
-            TrackingController.start(context, selectedType, id)
+        if (!startRequested && !running) {
+            startRequested = true
+            try {
+                maybePromptBattery(context)
+                TrackingController.start(context, selectedType)
+            } catch (_: Exception) {
+                startRequested = false
+                Toast.makeText(context, "Could not start recording. Check location permission.", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -104,43 +90,11 @@ fun RecordScreen(
         }
     }
 
-    // Single-save path: consumeFinished() claims the snapshot once (by sessionId),
-    // so recomposition, double STOP, or a second collector cannot insert duplicates.
+    // The service owns persistence; the screen only opens the committed activity.
     LaunchedEffect(finished) {
-        if (finished == null) return@LaunchedEffect
         val fin = TrackingController.consumeFinished() ?: return@LaunchedEffect
-        if (fin.sessionId != 0L && fin.sessionId == lastSavedSessionId) {
-            finishRequested = false
-            return@LaunchedEffect
-        }
-        val type = ActivityType.fromName(fin.type)
-        val cal = MonoRepository.estimateCalories(type, fin.distanceMeters, fin.movingTimeMillis)
-        val avg = if (fin.movingTimeMillis > 0)
-            fin.distanceMeters / (fin.movingTimeMillis / 1000.0) else 0.0
-        val id = repo.saveActivity(
-            Activity(
-                id = fin.activityId,
-                type = fin.type,
-                title = "${type.label} · ${Formatters.date(fin.startTimeMillis)}",
-                distanceMeters = fin.distanceMeters,
-                durationMillis = fin.durationMillis,
-                movingTimeMillis = fin.movingTimeMillis,
-                avgSpeedMps = avg,
-                maxSpeedMps = fin.maxSpeedMps,
-                elevationGainMeters = fin.elevationGainMeters,
-                calories = cal,
-                avgHeartRate = fin.avgHeartRate,
-                maxHeartRate = fin.maxHeartRate,
-                startTimeMillis = fin.startTimeMillis,
-                endTimeMillis = fin.endTimeMillis,
-                isManual = false,
-                source = "gps"
-            ),
-            fin.points
-        )
-        lastSavedSessionId = fin.sessionId
         finishRequested = false
-        onSaved(id)
+        onSaved(fin.activityId)
     }
 
     val points = snapshot.points.map { LatLng(it.latitude, it.longitude) }
@@ -245,6 +199,9 @@ fun RecordScreen(
                     Modifier.padding(24.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
+                    if (saveError != null) {
+                        Text(saveError!!, color = MaterialTheme.colorScheme.error)
+                    }
                     if (!sessionLive) {
                         Text(
                             "ACTIVITY TYPE", 
@@ -263,7 +220,8 @@ fun RecordScreen(
                             }
                         }
                         PillButton(
-                            text = "Start Session",
+                            text = if (startRequested) "Starting…" else "Start Session",
+                            enabled = !startRequested,
                             onClick = {
                                 val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
                                 if (fineGranted) {
@@ -292,6 +250,7 @@ fun RecordScreen(
                         ) {
                             PillButton(
                                 text = if (snapshot.paused) "Resume" else "Pause",
+                                enabled = !snapshot.saving,
                                 onClick = {
                                     if (snapshot.paused) TrackingController.resume(context)
                                     else TrackingController.pause(context)
@@ -300,7 +259,8 @@ fun RecordScreen(
                                 filled = false
                             )
                             PillButton(
-                                text = if (finishRequested) "Saving…" else "Finish",
+                                text = if (finishRequested || snapshot.saving) "Saving…" else "Finish",
+                                enabled = !finishRequested && !snapshot.saving,
                                 onClick = {
                                     if (finishRequested) return@PillButton
                                     finishRequested = true

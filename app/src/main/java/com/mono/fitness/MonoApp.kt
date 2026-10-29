@@ -20,9 +20,9 @@ class MonoApp : Application() {
         repository = MonoRepository(db)
         appScope.launch {
             val prefs = getSharedPreferences("mono_prefs", MODE_PRIVATE)
-            if (!prefs.getBoolean("prs_cleared_v2", false)) {
-                repository.clearPersonalRecords()
-                prefs.edit().putBoolean("prs_cleared_v2", true).apply()
+            if (!prefs.getBoolean("prs_rebuilt_v3", false)) {
+                repository.recalculatePersonalRecords()
+                prefs.edit().putBoolean("prs_rebuilt_v3", true).apply()
             }
         }
     }

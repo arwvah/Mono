@@ -269,12 +269,17 @@ fun HrZonesCard(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    "HEART RATE ZONES",
+                    "ESTIMATED HR ZONES",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                 )
             }
 
+            Text(
+                "Estimated from average and peak HR. Time in zones is not measured.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
             zones.forEach { z ->
                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(

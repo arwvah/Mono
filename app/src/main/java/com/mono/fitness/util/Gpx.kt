@@ -2,8 +2,12 @@ package com.mono.fitness.util
 
 import com.mono.fitness.data.Activity
 import com.mono.fitness.data.ActivityPoint
-import org.w3c.dom.Element
-import org.w3c.dom.Node
+import org.xml.sax.Attributes
+import org.xml.sax.InputSource
+import org.xml.sax.SAXException
+import org.xml.sax.ext.DefaultHandler2
+import java.io.FilterInputStream
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.io.OutputStreamWriter
@@ -11,7 +15,7 @@ import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
-import javax.xml.parsers.DocumentBuilderFactory
+import javax.xml.parsers.SAXParserFactory
 
 object Gpx {
     private val isoFormatter = DateTimeFormatter.ISO_INSTANT
@@ -82,53 +86,108 @@ object Gpx {
         val points: List<ActivityPoint>
     )
 
+    // Streaming parsing keeps large files from allocating an entire DOM tree.
+    internal const val MAX_IMPORT_BYTES = 16 * 1024 * 1024
+    internal const val MAX_IMPORT_POINTS = 100_000
+
     fun import(input: InputStream): ImportedTrack {
-        val factory = DocumentBuilderFactory.newInstance()
-        factory.isNamespaceAware = false
-        val builder = factory.newDocumentBuilder()
-        val doc = builder.parse(input)
+        val handler = ImportHandler()
+        val reader = SAXParserFactory.newInstance().apply {
+            isNamespaceAware = true
+        }.newSAXParser().xmlReader
+        reader.contentHandler = handler
+        reader.errorHandler = handler
+        reader.entityResolver = handler
+        // Reject DTDs before any internal or external entity can be expanded.
+        reader.setProperty("http://xml.org/sax/properties/lexical-handler", handler)
+        reader.parse(InputSource(LimitedInputStream(input)))
+        val selected = handler.trackPoints.ifEmpty { handler.routePoints.ifEmpty { handler.waypoints } }
+        return ImportedTrack(handler.name ?: "Imported", handler.type,
+            selected.mapIndexed { i, p -> p.copy(sequence = i) })
+    }
 
-        val nameNode = doc.getElementsByTagName("name").item(0)
-        val name = nameNode?.textContent?.trim().takeUnless { it.isNullOrEmpty() } ?: "Imported"
+    private class ImportHandler : DefaultHandler2() {
+        var name: String? = null
+        var type: String? = null
+        val trackPoints = mutableListOf<ActivityPoint>()
+        val routePoints = mutableListOf<ActivityPoint>()
+        val waypoints = mutableListOf<ActivityPoint>()
+        private val stack = java.util.ArrayDeque<String>()
+        private val text = StringBuilder()
+        private var point: ActivityPoint? = null
+        private var pointKind: String? = null
+        private var pointCount = 0
+        private val fallbackTime = System.currentTimeMillis()
 
-        val typeNode = doc.getElementsByTagName("type").item(0)
-        val type = typeNode?.textContent?.trim().takeUnless { it.isNullOrEmpty() }
-
-        val points = mutableListOf<ActivityPoint>()
-        val trkpts = doc.getElementsByTagName("trkpt")
-        val targetNodes = if (trkpts.length > 0) trkpts else doc.getElementsByTagName("wpt")
-
-        for (i in 0 until targetNodes.length) {
-            val el = targetNodes.item(i) as? Element ?: continue
-            val lat = el.getAttribute("lat").toDoubleOrNull() ?: continue
-            val lon = el.getAttribute("lon").toDoubleOrNull() ?: continue
-            var ele: Double? = null
-            var pointTime = System.currentTimeMillis()
-
-            val children = el.childNodes
-            for (j in 0 until children.length) {
-                val child = children.item(j)
-                if (child.nodeType == Node.ELEMENT_NODE) {
-                    when (child.nodeName.lowercase(Locale.US)) {
-                        "ele" -> ele = child.textContent?.trim()?.toDoubleOrNull()
-                        "time" -> child.textContent?.trim()?.let {
-                            parseTimestamp(it)?.let { pt -> pointTime = pt }
-                        }
-                    }
-                }
-            }
-
-            points += ActivityPoint(
-                activityId = 0,
-                latitude = lat,
-                longitude = lon,
-                elevationMeters = ele,
-                timestampMillis = pointTime,
-                sequence = points.size
-            )
+        override fun startDTD(name: String?, publicId: String?, systemId: String?) {
+            throw SAXException("GPX must not contain a DOCTYPE")
         }
 
-        return ImportedTrack(name, type, points)
+        override fun resolveEntity(publicId: String?, systemId: String?): InputSource {
+            throw SAXException("External entities are not allowed in GPX")
+        }
+
+        override fun startElement(uri: String?, localName: String, qName: String?, attrs: Attributes) {
+            if (stack.isEmpty() && localName != "gpx") throw SAXException("Expected a GPX document")
+            stack.addLast(localName)
+            text.setLength(0)
+            if (localName in setOf("trkpt", "rtept", "wpt")) {
+                if (++pointCount > MAX_IMPORT_POINTS) throw SAXException("GPX exceeds 100,000 points")
+                pointKind = localName
+                val lat = attrs.getValue("lat")?.toDoubleOrNull()
+                val lon = attrs.getValue("lon")?.toDoubleOrNull()
+                point = if (lat != null && lon != null && lat.isFinite() && lon.isFinite() &&
+                    lat in -90.0..90.0 && lon in -180.0..180.0) {
+                    ActivityPoint(activityId = 0, latitude = lat, longitude = lon,
+                        timestampMillis = fallbackTime)
+                } else null
+            }
+        }
+
+        override fun characters(chars: CharArray, start: Int, length: Int) {
+            text.append(chars, start, length)
+        }
+
+        override fun endElement(uri: String?, localName: String, qName: String?) {
+            stack.removeLast()
+            val parent = stack.peekLast().orEmpty()
+            val value = text.toString().trim()
+            when {
+                localName == "name" && parent in setOf("metadata", "trk", "rte", "gpx") ->
+                    if (name == null && value.isNotEmpty()) name = value
+                localName == "type" && parent in setOf("trk", "rte") ->
+                    if (type == null && value.isNotEmpty()) type = value
+                localName == "ele" && parent == pointKind ->
+                    point = point?.copy(elevationMeters = value.toDoubleOrNull()?.takeIf { it.isFinite() })
+                localName == "time" && parent == pointKind ->
+                    point = point?.copy(timestampMillis = parseTimestamp(value) ?: fallbackTime)
+                localName == pointKind -> {
+                    point?.let {
+                        when (localName) {
+                            "trkpt" -> trackPoints += it
+                            "rtept" -> routePoints += it
+                            else -> waypoints += it
+                        }
+                    }
+                    point = null
+                    pointKind = null
+                }
+            }
+            text.setLength(0)
+        }
+    }
+
+    private class LimitedInputStream(input: InputStream) : FilterInputStream(input) {
+        private var count = 0
+        override fun read(): Int = `in`.read().also { if (it != -1) account(1) }
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+            `in`.read(buffer, offset, minOf(length, MAX_IMPORT_BYTES - count + 1)).also {
+                if (it > 0) account(it)
+            }
+        private fun account(size: Int) {
+            count += size
+            if (count > MAX_IMPORT_BYTES) throw IOException("GPX exceeds 16 MiB")
+        }
     }
 
     fun parseTimestamp(s: String): Long? {

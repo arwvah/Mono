@@ -52,7 +52,7 @@ class HomeScreenTest {
             }
         }
         composeRule.onNodeWithText("Mono").assertIsDisplayed()
-        composeRule.onNodeWithText("Your activity feed").assertIsDisplayed()
-        composeRule.onNodeWithText("Add manual").assertIsDisplayed()
+        composeRule.onNodeWithText("Activity Feed").assertIsDisplayed()
+        composeRule.onNodeWithText("Add").assertIsDisplayed()
     }
 }

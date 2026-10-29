@@ -118,7 +118,6 @@ fun MonoNav(repo: MonoRepository) {
                 }
                 composable(Dest.Record.route) {
                     RecordScreen(
-                        repo = repo,
                         onSaved = { id ->
                             nav.navigate(Dest.ActivityDetail.create(id)) {
                                 popUpTo(Dest.Record.route)

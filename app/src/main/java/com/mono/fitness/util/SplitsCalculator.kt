@@ -193,6 +193,7 @@ object SplitsCalculator {
         avgHr: Int?,
         maxHr: Int?
     ): List<HrZone> {
+        if (totalDurationMs <= 0 || avgHr == null || avgHr <= 0) return emptyList()
         val peak = (maxHr ?: 190).coerceAtLeast(130)
         val zones = listOf(
             Triple(1, "Z1 Warm Up", (peak * 0.50).toInt()..(peak * 0.60).toInt()),
@@ -202,7 +203,7 @@ object SplitsCalculator {
             Triple(5, "Z5 Anaerobic", (peak * 0.90).toInt()..peak)
         )
 
-        val avg = avgHr ?: (peak * 0.75).toInt()
+        val avg = avgHr
         val weights = FloatArray(5)
 
         // Generate realistic bell curve around avg HR

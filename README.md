@@ -1,7 +1,7 @@
 # Mono
 
-A personal fitness tracker for Android.  
-Log activities, record live GPS sessions, plan routes, and review training stats — all on-device.
+A personal fitness tracker for Android.
+Log activities, record live GPS sessions, plan routes, and review training stats. Activities and routes are stored on-device.
 
 **Kotlin · Jetpack Compose · Room · Fused Location · Google Maps**
 
@@ -13,19 +13,22 @@ Log activities, record live GPS sessions, plan routes, and review training stats
 - Live GPS tracking with foreground service and 1km milestone split haptics
 - Kilometer splits breakdown with comparative relative pace bars and fastest split badges
 - Estimated Best Efforts detection (fastest 400m, 1k, 1 mile, 5k, 10k segments)
-- 5 Heart Rate Training Zones (Z1-Z5: Warm Up, Aerobic, Tempo, Threshold, Anaerobic)
+- Estimated heart-rate zone distribution when average HR is available; clearly labeled as an estimate, not measured time in zones
 - Interactive Workout Profile chart with instant toggle between Elevation and Pace / Speed curves
 - Strava-style Weekly Goal progress tracker
 - Post-activity map view and elevation profile
-- GPX import and export (for both activities and planned routes)
+- GPX activity import and activity / planned-route export (tracks, route points, and waypoints supported on import)
 - Shareable PNG route cards with true-aspect silhouette
 - Route planning with tap-to-add waypoints, elevation lookup, and distance filters
 - Weekly / monthly stats and auto-calculated personal records
-- Instant on-device persistence: sessions are created and saved as soon as you tap Start Session
+- The recording service creates sessions on Start, commits GPS points incrementally, and completes Finish only after the final save succeeds
+- Ordered, transactional recording saves with retry feedback; finishing also works when the Record screen is closed
 - Clean local database with zero mock data (100% user-recorded sessions and GPX imports)
 - Optional BLE heart-rate strap support during recording
 
-No account, no backend, no cloud sync. The app opens straight to the feed.
+No account, no app backend, no cloud sync. The app opens straight to the feed.
+
+Google Maps loads map data over the network. Route planning sends waypoint coordinates to the Open-Meteo elevation API. Recording history is stored locally in Room; Android system backup may include app data because backup is enabled. Exported GPX files and PNG cards include route information.
 
 ---
 
@@ -40,7 +43,7 @@ No account, no backend, no cloud sync. The app opens straight to the feed.
 
 ## Requirements
 
-- Android Studio Koala+
+- Android Studio with support for Android Gradle Plugin 8.7.2
 - JDK 17
 - Android SDK at the path in `local.properties`
 - Google account for a **Maps SDK for Android** API key
@@ -50,7 +53,7 @@ No account, no backend, no cloud sync. The app opens straight to the feed.
 
 ## Get started
 
-1. Open the project in Android Studio (Koala+ recommended).
+1. Clone this repository and open it in Android Studio.
 2. Copy `local.properties.example` to `local.properties` and fill in your paths.
 3. Set your Google Maps API key in `local.properties`:
 
@@ -59,7 +62,9 @@ sdk.dir=/path/to/your/android/sdk
 MAPS_API_KEY=AIza...your_real_key...
 ```
 
-4. Run **app** on an emulator or device with API 26+.
+4. Run **app** on an emulator with Google APIs or a physical device with Google Play services, API 26+.
+
+Without a Maps key, builds and automated tests still work; map tiles require a valid key. Never commit `local.properties` or a signing keystore.
 
 ---
 
@@ -69,7 +74,7 @@ MAPS_API_KEY=AIza...your_real_key...
 2. Create or select a project
 3. Enable **Maps SDK for Android**
 4. Create an API key and restrict it to Maps SDK for Android
-5. Match your package name:
+5. Add an Android application restriction using your signing certificate SHA-1 (`./gradlew signingReport`) and the package name:
    - Debug: `com.mono.fitness.debug`
    - Release: `com.mono.fitness`
 
@@ -96,7 +101,7 @@ app/src/main/java/com/mono/fitness/
 | Permission | Purpose |
 |---|---|
 | `ACCESS_FINE_LOCATION` | Live GPS tracking |
-| `ACCESS_BACKGROUND_LOCATION` | Background tracking continuation |
+| `ACCESS_BACKGROUND_LOCATION` | Declared; the app does not request background-location access. Recording continues through its location foreground service |
 | `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_LOCATION` | Recording notification |
 | `POST_NOTIFICATIONS` | Android 13+ notification permission |
 | `BLUETOOTH*` | Optional heart-rate strap |
@@ -106,31 +111,49 @@ app/src/main/java/com/mono/fitness/
 
 ## Troubleshooting
 
-**Blank map**  
+**Blank map**
 Set a valid `MAPS_API_KEY`, enable Maps SDK in Google Cloud Console, and confirm the package name and SHA-1 match.
 
-**Tracking stops when screen is off**  
+**Tracking stops when screen is off**
 Disable battery optimization for Mono and use a physical device when possible.
 
-**Gradle or Java errors**  
+**Gradle or Java errors**
 Install JDK 17 and set it in Android Studio under **Settings → Build → Gradle → Gradle JDK**.
 
-**No seed data**  
-Uninstall the app or clear storage, then make sure `SEED_DATA=true` in `build.gradle.kts`.
+**An empty feed on first launch**
+This is expected. Mono does not insert sample activities or routes. Record a session, add a manual activity, or import a GPX file.
+
+**A save fails during recording**
+Check available storage. Checkpoint failures retry on the next save; a failed Finish leaves the session paused with a Finish button to retry. Keep the app open until saving completes.
 
 ---
 
-## Seed data
+## Build and verify
 
-On first launch with an empty database, Mono inserts sample activities and one planned route.
+Use the committed Gradle wrapper and JDK 17:
 
-Toggle with:
-
-```kotlin
-buildConfigField("boolean", "SEED_DATA", "true")
+```sh
+./gradlew assembleDebug testDebugUnitTest lintDebug
 ```
 
-Clear app data to re-seed, or use **Settings → Clear database** in the app.
+The debug APK is `app/build/outputs/apk/debug/app-debug.apk`. Unit tests cover formatting, distance math, GPX parsing and import limits, deterministic elevation batching, and recording save ordering / retry behavior.
+
+With an API 26+ device or Google APIs emulator connected (CI uses API 35):
+
+```sh
+./gradlew connectedDebugAndroidTest
+```
+
+Instrumented tests cover Room persistence and rollback, personal-record recalculation, Android GPX parsing, duplicate recording Start / Finish commands, screen smoke tests, and PNG export. GitHub Actions runs both suites and lint, and uploads test reports and the debug APK.
+
+## Data integrity and limits
+
+- Activity and route updates commit metadata and GPS points in a single database transaction.
+- Personal records are rebuilt for affected sports after activity edits and deletion, and after recording finishes.
+- GPX imports reject DTDs and external entities, skip invalid coordinates, and accept up to **16 MiB / 100,000 points**. XML namespace prefixes and `<rtept>` routes are supported.
+- Recording checkpoints preserve committed progress if the process is killed. Automatic resumption after process death is not implemented; any points not yet committed can be lost.
+- Heart-rate zone percentages are estimates from summary HR values. Mono does not store a complete timestamped HR series, so measured time in zones is unavailable.
+- Finish recording before editing its metrics or clearing the database in Settings. Clearing app storage or uninstalling deletes local history; export important activities first.
 
 ---
 

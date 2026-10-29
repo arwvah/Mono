@@ -79,4 +79,10 @@ class SplitsCalculatorTest {
         val totalPct = zones.sumOf { it.percentage.toDouble() }
         assertEquals(100.0, totalPct, 0.5)
     }
+
+    @Test
+    fun calculateHrZones_withoutHeartRateOrDuration_returnsEmpty() {
+        assertTrue(SplitsCalculator.calculateHrZones(3_600_000, null, null).isEmpty())
+        assertTrue(SplitsCalculator.calculateHrZones(0, 155, 185).isEmpty())
+    }
 }

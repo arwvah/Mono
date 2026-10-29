@@ -6,11 +6,68 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 
 class GpxRoundTripTest {
+
+    @Test
+    fun import_prefixedRoute_supportsRteptAndEscapedNames() {
+        val xml = """<g:gpx xmlns:g="http://www.topografix.com/GPX/1/1">
+            <g:rte><g:name>A &amp; B</g:name><g:type>RIDE</g:type>
+            <g:rtept lat="41.0" lon="69.0"><g:ele>12.5</g:ele></g:rtept>
+            <g:rtept lat="41.1" lon="69.1"/></g:rte></g:gpx>"""
+        val imported = Gpx.import(xml.byteInputStream())
+        assertEquals("A & B", imported.name)
+        assertEquals("RIDE", imported.type)
+        assertEquals(2, imported.points.size)
+        assertEquals(12.5, imported.points.first().elevationMeters!!, 0.0)
+        assertEquals(listOf(0, 1), imported.points.map { it.sequence })
+    }
+
+    @Test
+    fun import_invalidCoordinatesAreSkippedAndNonfiniteElevationIsIgnored() {
+        val xml = """<gpx><trk><trkseg>
+            <trkpt lat="NaN" lon="69"/><trkpt lat="91" lon="69"/>
+            <trkpt lat="41" lon="Infinity"/><trkpt lat="41" lon="181"/>
+            <trkpt lat="41" lon="69"><ele>NaN</ele></trkpt>
+            </trkseg></trk></gpx>"""
+        val imported = Gpx.import(xml.byteInputStream())
+        assertEquals(1, imported.points.size)
+        assertEquals(null, imported.points.single().elevationMeters)
+    }
+
+    @Test
+    fun import_rejectsDoctypeAndExternalEntities() {
+        listOf(
+            """<!DOCTYPE gpx [<!ENTITY secret SYSTEM "file:///nonexistent-mono-test">]>""",
+            """<!DOCTYPE gpx [<!ENTITY secret "expanded">]>""",
+            """<!DOCTYPE gpx SYSTEM "https://example.invalid/mono-test.dtd">"""
+        ).forEach { declaration ->
+            assertThrows(org.xml.sax.SAXException::class.java) {
+                Gpx.import((declaration + "<gpx><name>&secret;</name></gpx>").byteInputStream())
+            }
+        }
+    }
+
+    @Test
+    fun import_rejectsNonGpxDocuments() {
+        assertThrows(org.xml.sax.SAXException::class.java) {
+            Gpx.import("<html><name>Not a GPX file</name></html>".byteInputStream())
+        }
+    }
+
+    @Test
+    fun import_limitsBytesAndPointCount() {
+        assertThrows(java.io.IOException::class.java) {
+            Gpx.import(("<gpx>" + " ".repeat(Gpx.MAX_IMPORT_BYTES) + "</gpx>").byteInputStream())
+        }
+        assertThrows(org.xml.sax.SAXException::class.java) {
+            Gpx.import(("<gpx>" + "<wpt lat=\"1\" lon=\"2\"/>".repeat(Gpx.MAX_IMPORT_POINTS + 1) + "</gpx>").byteInputStream())
+        }
+    }
 
     @Test
     fun exportAndReimport_preservesPoints() {
