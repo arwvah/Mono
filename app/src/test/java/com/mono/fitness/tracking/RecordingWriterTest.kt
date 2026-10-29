@@ -3,10 +3,14 @@ package com.mono.fitness.tracking
 import com.mono.fitness.data.Activity
 import com.mono.fitness.data.ActivityPoint
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -83,6 +87,29 @@ class RecordingWriterTest {
         writer.save(Activity(), path(1)).await().getOrThrow()
         assertTrue(writer.save(Activity(), path(2)).await().isFailure)
         writer.save(Activity(), path(3)).await().getOrThrow()
+        assertEquals(listOf(listOf(0), listOf(1), listOf(1, 2)), batches)
+    }
+
+    @Test
+    fun serviceScopeReplacement_retriesCancelledWriteWithExistingId() = runTest {
+        val oldScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+        val gate = CompletableDeferred<Unit>()
+        var attempts = 0
+        val batches = mutableListOf<List<Int>>()
+        val ids = mutableListOf<Long>()
+        val writer = RecordingWriter(oldScope, { activity, points ->
+            batches += points.map { it.sequence }
+            ids += activity.id
+            if (++attempts == 2) gate.await()
+            12L
+        })
+        writer.save(Activity(), path(1)).await().getOrThrow()
+        writer.save(Activity(), path(2))
+        runCurrent()
+        oldScope.cancel()
+        writer.rebind(this)
+        assertEquals(12L, writer.save(Activity(), path(3)).await().getOrThrow())
+        assertEquals(listOf(0L, 12L, 12L), ids)
         assertEquals(listOf(listOf(0), listOf(1), listOf(1, 2)), batches)
     }
 }

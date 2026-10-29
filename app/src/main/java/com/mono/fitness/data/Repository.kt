@@ -92,8 +92,10 @@ class MonoRepository(
         val elev = elevationGain(ordered.map { it.elevationMeters })
         val start = ordered.minOf { it.timestampMillis }
         val end = ordered.maxOf { it.timestampMillis }.coerceAtLeast(start)
-        val dur = (end - start).coerceAtLeast(1L)
-        val avg = dist / (dur / 1000.0)
+        // Untimed routes share the parser's fallback timestamp. Keep time/pace
+        // unknown rather than inventing a one-millisecond world-record effort.
+        val dur = (end - start).coerceAtLeast(0L)
+        val avg = if (dur > 0) dist / (dur / 1000.0) else 0.0
         val cal = estimateCalories(type, dist, dur)
         return saveActivity(
             Activity(

@@ -151,6 +151,7 @@ Instrumented tests cover Room persistence and rollback, personal-record recalcul
 - Activity and route updates commit metadata and GPS points in a single database transaction.
 - Personal records are rebuilt for affected sports after activity edits and deletion, and after recording finishes.
 - GPX imports reject DTDs and external entities, skip invalid coordinates, and accept up to **16 MiB / 100,000 points**. XML namespace prefixes and `<rtept>` routes are supported.
+- Untimed GPX routes retain their distance with zero recorded time and speed; they do not create a fastest-pace record.
 - Recording checkpoints preserve committed progress if the process is killed. Automatic resumption after process death is not implemented; any points not yet committed can be lost.
 - Heart-rate zone percentages are estimates from summary HR values. Mono does not store a complete timestamped HR series, so measured time in zones is unavailable.
 - Finish recording before editing its metrics or clearing the database in Settings. Clearing app storage or uninstalling deletes local history; export important activities first.

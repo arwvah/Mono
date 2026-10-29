@@ -22,6 +22,7 @@ import com.mono.fitness.ui.components.TypeChip
 import com.mono.fitness.ui.theme.CardShape
 import com.mono.fitness.ui.theme.MonoScaffoldBackground
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,10 +52,10 @@ fun ActivityEditScreen(
                 title = a.title
                 notes = a.notes
                 distanceKm = (a.distanceMeters / 1000.0).let {
-                    if (it == 0.0) "" else String.format("%.2f", it)
+                    if (it == 0.0) "" else String.format(Locale.US, "%.2f", it)
                 }
                 durationMin = (a.durationMillis / 60_000.0).let {
-                    if (it == 0.0) "" else String.format("%.0f", it)
+                    if (it == 0.0) "" else String.format(Locale.US, "%.0f", it)
                 }
                 elev = if (a.elevationGainMeters == 0.0) "" else a.elevationGainMeters.toInt().toString()
                 calories = if (a.calories == 0) "" else a.calories.toString()

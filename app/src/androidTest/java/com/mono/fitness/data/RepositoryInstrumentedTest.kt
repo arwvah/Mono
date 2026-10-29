@@ -47,6 +47,17 @@ class RepositoryInstrumentedTest {
     }
 
     @Test
+    fun untimedGpx_hasNoInventedPaceRecord() = runBlocking {
+        val points = listOf(point(0), point(10)).map { it.copy(timestampMillis = 1000L) }
+        val id = repo.importGpxTrack("Untimed route", "RUN", points)
+        val activity = repo.getActivity(id)!!
+        assertTrue(activity.distanceMeters > 200.0)
+        assertEquals(0L, activity.durationMillis)
+        assertEquals(0.0, activity.avgSpeedMps, 0.0)
+        assertNull(db.personalRecordDao().get("RUN", RecordKeys.FASTEST_PACE))
+    }
+
+    @Test
     fun recordingCheckpoints_preservePointsAndUserNotes() = runBlocking {
         val id = repo.saveRecordingProgress(Activity(title = "Run"), listOf(point(0)))
         repo.saveActivity(repo.getActivity(id)!!.copy(title = "Morning run", notes = "Keep this"))
