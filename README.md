@@ -167,4 +167,6 @@ Instrumented tests cover Room persistence and rollback, personal-record recalcul
 
 ## License
 
-Personal and educational use.
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
+Third-party components retain their respective licenses.
